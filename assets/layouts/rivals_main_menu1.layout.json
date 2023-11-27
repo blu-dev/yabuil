@@ -1,0 +1,165 @@
+{
+    "resolution": [1920, 1080],
+    "canvas_size": [1920, 1080],
+    "nodes": [
+        {
+            "id": "background",
+            "position": [960.0, 540.0],
+            "size": [1920.0, 1124.0],
+            "anchor": "Center",
+            "node_kind": "Image",
+            "node_data": {
+                "path": "images/rivals_background.png"
+            },
+            "attributes": {
+                "NearestNeighbor": {},
+                "ImageTint": {
+                    "color": [1.0, 1.0, 1.0, 0.4]
+                }
+            }
+        },
+        {
+            "id": "title_bar",
+            "position": [-5.0, -5.0],
+            "size": [1930.0, 150.0],
+            "anchor": "TopLeft",
+            "node_kind": "Image",
+            "node_data": {
+                "path": "images/rivals_title_bar.png"
+            },
+            "attributes": {
+                "NearestNeighbor": {}
+            }
+        },
+        {
+            "id": "main_menu_text",
+            "position": [60.0, 14.0],
+            "size": [124.0, 99.0],
+            "anchor": "TopLeft",
+            "node_kind": "Text",
+            "node_data": {
+                "text": "MAIN\nMENU",
+                "size": 60.0,
+                "color": [1.0, 1.0, 1.0, 1.0]
+            }
+        },
+        {
+            "id": "local_play_button",
+            "position": [64.0, 204.0],
+            "size": [880.0, 96.0],
+            "anchor": "TopLeft",
+            "node_kind": "Layout",
+            "node_data": {
+                "path": "layouts/rivals_menu_button.layout.json"
+            },
+            "attributes": {
+                "MainMenuButton": "LocalPlay",
+                "ReplaceImage": {
+                    "id": "button_image",
+                    "path": "images/rivals_menu_button1.png"
+                },
+                "ReplaceText": {
+                    "id": "button_text",
+                    "text": "LOCAL PLAY"
+                }
+            }
+        },
+        {
+            "id": "online_play_button",
+            "position": [64.0, 332.0],
+            "size": [880.0, 96.0],
+            "anchor": "TopLeft",
+            "node_kind": "Layout",
+            "node_data": {
+                "path": "layouts/rivals_menu_button.layout.json"
+            },
+            "attributes": {
+                "MainMenuButton": "OnlinePlay",
+                "ReplaceImage": {
+                    "id": "button_image",
+                    "path": "images/rivals_menu_button2.png"
+                },
+                "ReplaceText": {
+                    "id": "button_text",
+                    "text": "ONLINE PLAY"
+                }
+            }
+        },
+        {
+            "id": "extras_button",
+            "position": [64.0, 460.0],
+            "size": [880.0, 96.0],
+            "anchor": "TopLeft",
+            "node_kind": "Layout",
+            "node_data": {
+                "path": "layouts/rivals_menu_button.layout.json"
+            },
+            "attributes": {
+                "MainMenuButton": "Extras",
+                "ReplaceImage": {
+                    "id": "button_image",
+                    "path": "images/rivals_menu_button3.png"
+                },
+                "ReplaceText": {
+                    "id": "button_text",
+                    "text": "EXTRAS"
+                }
+            }
+        },
+        {
+            "id": "milestones_button",
+            "position": [64.0, 588.0],
+            "size": [880.0, 96.0],
+            "anchor": "TopLeft",
+            "node_kind": "Layout",
+            "node_data": {
+                "path": "layouts/rivals_menu_button.layout.json"
+            },
+            "attributes": {
+                "MainMenuButton": "Milestones",
+                "ReplaceImage": {
+                    "id": "button_image",
+                    "path": "images/rivals_menu_button4.png"
+                },
+                "ReplaceText": {
+                    "id": "button_text",
+                    "text": "MILESTONES"
+                }
+            }
+        },
+        {
+            "id": "options_button",
+            "position": [64.0, 716.0],
+            "size": [880.0, 96.0],
+            "anchor": "TopLeft",
+            "node_kind": "Layout",
+            "node_data": {
+                "path": "layouts/rivals_menu_button.layout.json"
+            },
+            "attributes": {
+                "MainMenuButton": "Options",
+                "ReplaceText": {
+                    "id": "button_text",
+                    "text": "OPTIONS"
+                }
+            }
+        },
+        {
+            "id": "exit_button",
+            "position": [64.0, 844.0],
+            "size": [880.0, 96.0],
+            "anchor": "TopLeft",
+            "node_kind": "Layout",
+            "node_data": {
+                "path": "layouts/rivals_menu_button.layout.json"
+            },
+            "attributes": {
+                "MainMenuButton": "Exit",
+                "ReplaceText": {
+                    "id": "button_text",
+                    "text": "EXIT"
+                }
+            }
+        }
+    ]
+}

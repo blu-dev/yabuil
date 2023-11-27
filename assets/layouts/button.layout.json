@@ -1,0 +1,106 @@
+{
+    "resolution": [1920, 1080],
+    "canvas_size": [640, 80],
+    "nodes": [
+        {
+            "id": "button_hit",
+            "position": [0.0, 0.0],
+            "size": [540.0, 80.0],
+            "anchor": "TopLeft",
+            "node_kind": "Null",
+            "attributes": {
+                "InputDetection": {
+                    "use_camera_window": true
+                }
+            }
+        },
+        {
+            "id": "button_image",
+            "position": [0.0, 0.0],
+            "size": [540.0, 80.0],
+            "anchor": "TopLeft",
+            "node_kind": "Image",
+            "node_data": {
+                "path": "images/button.png"
+            }
+        },
+        {
+            "id": "button_text",
+            "position": [10.0, 10.0],
+            "size": [500.0, 60.0],
+            "anchor": "TopLeft",
+            "node_kind": "Text",
+            "node_data": {
+                "text": "placeholder",
+                "size": 50.0,
+                "color": [0.7, 0.7, 0.7, 1.0]
+            }
+        }
+    ],
+    "animations": {
+        "select": [
+            {
+                "id": "button_image",
+                "time_ms": 100.0,
+                "target": {
+                    "Position": {
+                        "start": [0.0, 0.0],
+                        "end": [100.0, 0.0]
+                    }
+                }
+            },
+            {
+                "id": "button_text",
+                "time_ms": 100.0,
+                "target": {
+                    "Position": {
+                        "start": [10.0, 10.0],
+                        "end": [110.0, 10.0]
+                    }
+                }
+            },
+            {
+                "id": "button_hit",
+                "time_ms": 1.0,
+                "target": {
+                    "Size": {
+                        "start": [540.0, 80.0],
+                        "end": [640.0, 80.0]
+                    }
+                }
+            }
+        ],
+        "unselect": [
+            {
+                "id": "button_image",
+                "time_ms": 100.0,
+                "target": {
+                    "Position": {
+                        "start": [100.0, 0.0],
+                        "end": [0.0, 0.0]
+                    }
+                }
+            },
+            {
+                "id": "button_text",
+                "time_ms": 100.0,
+                "target": {
+                    "Position": {
+                        "start": [110.0, 10.0],
+                        "end": [10.0, 10.0]
+                    }
+                }
+            },
+            {
+                "id": "button_hit",
+                "time_ms": 1.0,
+                "target": {
+                    "Size": {
+                        "start": [640.0, 80.0],
+                        "end": [540.0, 80.0]
+                    }
+                }
+            }
+        ]
+    }
+}

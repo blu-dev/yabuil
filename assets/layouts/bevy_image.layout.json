@@ -1,0 +1,16 @@
+{
+    "resolution": [1920, 1080],
+    "canvas_size": [1280, 720],
+    "nodes": [
+        {
+            "id": "bevy_image",
+            "position": [0.0, 0.0],
+            "size": [905.0, 363.0],
+            "anchor": "TopLeft",
+            "node_kind": "Image",
+            "node_data": {
+                "path": "images/bevy.png"
+            }
+        }
+    ]
+}

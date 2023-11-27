@@ -1,0 +1,70 @@
+{
+    "canvas_size": [1920, 1080],
+    "nodes": [
+        {
+            "id": "local_play_button",
+            "position": [0.0, 0.0],
+            "size": [640.0, 80.0],
+            "anchor": "TopLeft",
+            "node_kind": "Layout",
+            "node_data": {
+                "path": "layouts/button.layout.json"
+            },
+            "attributes": {
+                "MainMenuButton": "LocalPlay"
+            }
+        },
+        {
+            "id": "online_play_button",
+            "position": [0.0, 100.0],
+            "size": [640.0, 80.0],
+            "anchor": "TopLeft",
+            "node_kind": "Layout",
+            "node_data": {
+                "path": "layouts/button.layout.json"
+            },
+            "attributes": {
+                "MainMenuButton": "OnlinePlay"
+            }
+        },
+        {
+            "id": "settings_button",
+            "position": [0.0, 200.0],
+            "size": [640.0, 80.0],
+            "anchor": "TopLeft",
+            "node_kind": "Layout",
+            "node_data": {
+                "path": "layouts/button.layout.json"
+            },
+            "attributes": {
+                "MainMenuButton": "Settings"
+            }
+        },
+        {
+            "id": "exit_button",
+            "position": [0.0, 300.0],
+            "size": [640.0, 80.0],
+            "anchor": "TopLeft",
+            "node_kind": "Layout",
+            "node_data": {
+                "path": "layouts/button.layout.json"
+            },
+            "attributes": {
+                "MainMenuButton": "Exit"
+            }
+        },
+        {
+            "id": "controller_cursor",
+            "position": [960.0, 540.0],
+            "size": [60.0, 60.0],
+            "anchor": "Center",
+            "node_kind": "Image",
+            "node_data": {
+                "path": "images/cursor.png"
+            },
+            "attributes": {
+                "ControllerCursor": {}
+            }
+        }
+    ]
+}
