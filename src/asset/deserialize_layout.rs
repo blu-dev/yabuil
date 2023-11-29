@@ -1,15 +1,12 @@
-use bevy::{
-    math::{UVec2, Vec2},
-    utils::HashMap,
-};
+use bevy::math::{UVec2, Vec2};
 use serde::{
     de::{DeserializeSeed, Visitor},
     Deserialize,
 };
 
-use crate::{animation::Animations, AttributeRegistryInner, LayoutAttribute};
+use crate::{node::Anchor, LayoutAttribute, LayoutRegistryInner};
 
-use super::{Layout, LayoutNode, NodeAnchor};
+use super::{deserialize_animation::AnimationsDeserializer, Layout, LayoutNode};
 
 enum LayoutFieldId {
     Resolution,
@@ -57,6 +54,7 @@ enum NodeFieldId {
     Id,
     Position,
     Size,
+    Rotation,
     Anchor,
     Attributes,
     Other(serde_value::Value),
@@ -79,6 +77,7 @@ impl<'de> Visitor<'de> for NodeFieldVisitor {
             "id" => Ok(NodeFieldId::Id),
             "position" => Ok(NodeFieldId::Position),
             "size" => Ok(NodeFieldId::Size),
+            "rotation" => Ok(NodeFieldId::Rotation),
             "anchor" => Ok(NodeFieldId::Anchor),
             "attributes" => Ok(NodeFieldId::Attributes),
             other => Ok(NodeFieldId::Other(serde_value::Value::String(other.to_string()))),
@@ -95,7 +94,7 @@ impl<'de> Deserialize<'de> for NodeFieldId {
     }
 }
 
-struct NodeListSeed<'de>(&'de AttributeRegistryInner);
+struct NodeListSeed<'de>(&'de LayoutRegistryInner);
 
 impl<'de> DeserializeSeed<'de> for NodeListSeed<'de> {
     type Value = Vec<LayoutNode>;
@@ -107,7 +106,7 @@ impl<'de> DeserializeSeed<'de> for NodeListSeed<'de> {
     }
 }
 
-struct AttributeMapVisitor<'de>(&'de AttributeRegistryInner);
+struct AttributeMapVisitor<'de>(&'de LayoutRegistryInner);
 
 impl<'de> Visitor<'de> for AttributeMapVisitor<'de> {
     type Value = Vec<Box<dyn LayoutAttribute>>;
@@ -128,7 +127,7 @@ impl<'de> Visitor<'de> for AttributeMapVisitor<'de> {
             };
 
         while let Some(key) = map.next_key::<String>()? {
-            let Some(data) = self.0.map.get(key.as_str()) else {
+            let Some(data) = self.0.attributes.get(key.as_str()) else {
                 return Err(<A::Error as serde::de::Error>::custom(
                     format!("LayoutNode attribute '{key}' was not registered")
                 ));
@@ -144,7 +143,7 @@ impl<'de> Visitor<'de> for AttributeMapVisitor<'de> {
     }
 }
 
-struct AttributeDeserializer<'de>(&'de AttributeRegistryInner);
+struct AttributeDeserializer<'de>(&'de LayoutRegistryInner);
 
 impl<'de> DeserializeSeed<'de> for AttributeDeserializer<'de> {
     type Value = Vec<Box<dyn LayoutAttribute>>;
@@ -157,7 +156,7 @@ impl<'de> DeserializeSeed<'de> for AttributeDeserializer<'de> {
     }
 }
 
-struct NodeVisitor<'de>(&'de AttributeRegistryInner);
+struct NodeVisitor<'de>(&'de LayoutRegistryInner);
 
 impl<'de> Visitor<'de> for NodeVisitor<'de> {
     type Value = LayoutNode;
@@ -181,6 +180,7 @@ impl<'de> Visitor<'de> for NodeVisitor<'de> {
         let mut id = None;
         let mut position = None;
         let mut size = None;
+        let mut rotation = None;
         let mut anchor = None;
         let mut attributes = None;
         let mut extra_content = Vec::new();
@@ -208,12 +208,19 @@ impl<'de> Visitor<'de> for NodeVisitor<'de> {
 
                     size = Some(map.next_value::<Vec2>()?);
                 }
+                NodeFieldId::Rotation => {
+                    if rotation.is_some() {
+                        return dupe("rotation");
+                    }
+
+                    rotation = Some(map.next_value::<f32>()?);
+                }
                 NodeFieldId::Anchor => {
                     if anchor.is_some() {
                         return dupe("anchor");
                     }
 
-                    anchor = Some(map.next_value::<NodeAnchor>()?);
+                    anchor = Some(map.next_value::<Anchor>()?);
                 }
                 NodeFieldId::Attributes => {
                     if attributes.is_some() {
@@ -253,6 +260,7 @@ impl<'de> Visitor<'de> for NodeVisitor<'de> {
             id: unsafe { id.unwrap_unchecked() },
             position: unsafe { position.unwrap_unchecked() },
             size: unsafe { size.unwrap_unchecked() },
+            rotation: rotation.unwrap_or_default(),
             anchor: unsafe { anchor.unwrap_unchecked() },
             inner,
             attributes: attributes.unwrap_or_default(),
@@ -260,7 +268,7 @@ impl<'de> Visitor<'de> for NodeVisitor<'de> {
     }
 }
 
-struct NodeSeed<'de>(&'de AttributeRegistryInner);
+struct NodeSeed<'de>(&'de LayoutRegistryInner);
 
 impl<'de> DeserializeSeed<'de> for NodeSeed<'de> {
     type Value = LayoutNode;
@@ -273,7 +281,7 @@ impl<'de> DeserializeSeed<'de> for NodeSeed<'de> {
     }
 }
 
-struct NodeListVisitor<'de>(&'de AttributeRegistryInner);
+struct NodeListVisitor<'de>(&'de LayoutRegistryInner);
 
 impl<'de> Visitor<'de> for NodeListVisitor<'de> {
     type Value = Vec<LayoutNode>;
@@ -301,7 +309,7 @@ impl<'de> Visitor<'de> for NodeListVisitor<'de> {
     }
 }
 
-struct LayoutVisitor<'de>(&'de AttributeRegistryInner);
+struct LayoutVisitor<'de>(&'de LayoutRegistryInner);
 
 impl<'de> Visitor<'de> for LayoutVisitor<'de> {
     type Value = Layout;
@@ -347,7 +355,7 @@ impl<'de> Visitor<'de> for LayoutVisitor<'de> {
                         return Err(<A::Error as serde::de::Error>::duplicate_field("animations"));
                     }
 
-                    animations = Some(map.next_value::<Animations>()?);
+                    animations = Some(map.next_value_seed(AnimationsDeserializer(self.0))?);
                 }
             }
         }
@@ -369,7 +377,7 @@ impl<'de> Visitor<'de> for LayoutVisitor<'de> {
     }
 }
 
-struct LayoutDeserializer<'de>(&'de AttributeRegistryInner);
+struct LayoutDeserializer<'de>(&'de LayoutRegistryInner);
 
 impl<'de> DeserializeSeed<'de> for LayoutDeserializer<'de> {
     type Value = Layout;
@@ -384,7 +392,7 @@ impl<'de> DeserializeSeed<'de> for LayoutDeserializer<'de> {
 
 pub(super) fn deserialize_layout(
     data: &[u8],
-    registry: &AttributeRegistryInner,
+    registry: &LayoutRegistryInner,
 ) -> Result<Layout, serde_json::Error> {
     let mut deserializer = serde_json::Deserializer::from_slice(data);
 

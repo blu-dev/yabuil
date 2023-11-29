@@ -3,8 +3,9 @@
     "nodes": [
         {
             "id": "local_play_button",
-            "position": [0.0, 0.0],
+            "position": [-20.0, 30.0],
             "size": [640.0, 80.0],
+            "rotation": -10.0,
             "anchor": "TopLeft",
             "node_kind": "Layout",
             "node_data": {
@@ -16,8 +17,9 @@
         },
         {
             "id": "online_play_button",
-            "position": [0.0, 100.0],
+            "position": [-20.0, 130.0],
             "size": [640.0, 80.0],
+            "rotation": -10.0,
             "anchor": "TopLeft",
             "node_kind": "Layout",
             "node_data": {
@@ -29,8 +31,9 @@
         },
         {
             "id": "settings_button",
-            "position": [0.0, 200.0],
+            "position": [-20.0, 230.0],
             "size": [640.0, 80.0],
+            "rotation": -10.0,
             "anchor": "TopLeft",
             "node_kind": "Layout",
             "node_data": {
@@ -42,8 +45,9 @@
         },
         {
             "id": "exit_button",
-            "position": [0.0, 300.0],
+            "position": [-20.0, 330.0],
             "size": [640.0, 80.0],
+            "rotation": -10.0,
             "anchor": "TopLeft",
             "node_kind": "Layout",
             "node_data": {

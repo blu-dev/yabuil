@@ -4,8 +4,9 @@ use bevy::prelude::*;
 
 use crate::{
     animation::{AnimationPlayerState, Animations},
-    components::{LayoutNodeMetadata, NodeKind},
-    ComputedLayoutNodeMetadata,
+    components::NodeKind,
+    node::Node,
+    LayoutId, LayoutNodeId,
 };
 
 #[derive(Copy, Clone)]
@@ -13,38 +14,49 @@ pub struct NodeView<'a>(EntityRef<'a>);
 
 impl<'a> NodeView<'a> {
     pub fn new(entity: EntityRef<'a>) -> Option<Self> {
-        entity
-            .contains::<ComputedLayoutNodeMetadata>()
-            .then_some(Self(entity))
+        entity.contains::<Node>().then_some(Self(entity))
     }
 
     pub fn as_entity(&self) -> EntityRef<'a> {
         self.0.clone()
     }
 
-    pub fn metadata(&self) -> &LayoutNodeMetadata {
-        self.0
-            .get::<LayoutNodeMetadata>()
-            .expect("NodeView should always have access to LayoutNodeMetadata")
+    pub fn layout_id(&self) -> LayoutId {
+        *self
+            .0
+            .get::<LayoutId>()
+            .expect("NodeView should always have access to LayoutId")
     }
 
-    pub fn computed_metadata(&self) -> &ComputedLayoutNodeMetadata {
+    pub fn id(&self) -> &LayoutNodeId {
         self.0
-            .get::<ComputedLayoutNodeMetadata>()
-            .expect("NodeView should always have access to ComputedLayoutNodeMetadata")
+            .get::<LayoutNodeId>()
+            .expect("NodeView should always have access to LayoutNodeId")
+    }
+
+    pub fn kind(&self) -> NodeKind {
+        *self
+            .0
+            .get::<NodeKind>()
+            .expect("NodeView should always have access to NodeKind")
+    }
+
+    pub fn node(&self) -> &Node {
+        self.0
+            .get::<Node>()
+            .expect("NodeView should always have access to Node")
     }
 
     pub fn as_text_node(&self) -> Option<TextNodeView<'a>> {
-        (self.computed_metadata().kind() == NodeKind::Text).then_some(TextNodeView(self.clone()))
+        (self.kind() == NodeKind::Text).then_some(TextNodeView(self.clone()))
     }
 
     pub fn as_image_node(&self) -> Option<ImageNodeView<'a>> {
-        (self.computed_metadata().kind() == NodeKind::Image).then_some(ImageNodeView(self.clone()))
+        (self.kind() == NodeKind::Image).then_some(ImageNodeView(self.clone()))
     }
 
     pub fn as_layout_node(&self) -> Option<LayoutNodeView<'a>> {
-        (self.computed_metadata().kind() == NodeKind::Layout)
-            .then_some(LayoutNodeView(self.clone()))
+        (self.kind() == NodeKind::Layout).then_some(LayoutNodeView(self.as_entity()))
     }
 }
 
@@ -52,27 +64,39 @@ pub struct NodeViewMut<'a>(EntityMut<'a>);
 
 impl<'a> NodeViewMut<'a> {
     pub fn new(entity: EntityMut<'a>) -> Option<Self> {
-        entity
-            .contains::<ComputedLayoutNodeMetadata>()
-            .then_some(Self(entity))
+        entity.contains::<Node>().then_some(Self(entity))
     }
 
-    pub fn metadata(&self) -> &LayoutNodeMetadata {
-        self.0
-            .get::<LayoutNodeMetadata>()
-            .expect("NodeViewMut should always have access to LayoutNodeMetadata")
+    pub fn layout_id(&self) -> LayoutId {
+        *self
+            .0
+            .get::<LayoutId>()
+            .expect("NodeViewMut should always have access to LayoutId")
     }
 
-    pub fn metadata_mut(&mut self) -> Mut<'_, LayoutNodeMetadata> {
+    pub fn id(&self) -> &LayoutNodeId {
         self.0
-            .get_mut::<LayoutNodeMetadata>()
-            .expect("NodeViewMut should always have access to LayoutNodeMetadata")
+            .get::<LayoutNodeId>()
+            .expect("NodeViewMut should always have access to LayoutNodeId")
     }
 
-    pub fn computed_metadata(&self) -> &ComputedLayoutNodeMetadata {
+    pub fn kind(&self) -> NodeKind {
+        *self
+            .0
+            .get::<NodeKind>()
+            .expect("NodeViewMut should always have access to NodeKind")
+    }
+
+    pub fn node(&self) -> &Node {
         self.0
-            .get::<ComputedLayoutNodeMetadata>()
-            .expect("NodeViewMut should always have access to ComputedLayoutNodeMetadata")
+            .get::<Node>()
+            .expect("NodeViewMut should always have access to Node")
+    }
+
+    pub fn node_mut(&mut self) -> Mut<'_, Node> {
+        self.0
+            .get_mut::<Node>()
+            .expect("NodeViewMut should always have access to Node")
     }
 
     pub fn as_readonly<'b>(&'b self) -> NodeView<'b> {
@@ -104,18 +128,15 @@ impl<'a> NodeViewMut<'a> {
     }
 
     pub fn as_text_node_mut<'b>(&'b mut self) -> Option<TextNodeViewMut<'b>> {
-        (self.computed_metadata().kind() == NodeKind::Text)
-            .then(|| TextNodeViewMut(self.reborrow()))
+        (self.kind() == NodeKind::Text).then(|| TextNodeViewMut(self.reborrow()))
     }
 
     pub fn as_image_node_mut<'b>(&'b mut self) -> Option<ImageNodeViewMut<'b>> {
-        (self.computed_metadata().kind() == NodeKind::Image)
-            .then(|| ImageNodeViewMut(self.reborrow()))
+        (self.kind() == NodeKind::Image).then(|| ImageNodeViewMut(self.reborrow()))
     }
 
     pub fn as_layout_node_mut<'b>(&'b mut self) -> Option<LayoutNodeViewMut<'b>> {
-        (self.computed_metadata().kind() == NodeKind::Layout)
-            .then(|| LayoutNodeViewMut(self.reborrow()))
+        (self.kind() == NodeKind::Layout).then(|| LayoutNodeViewMut(self.as_entity_mut()))
     }
 }
 
@@ -127,9 +148,7 @@ pub struct NodeWorldView<'a> {
 impl<'a> NodeWorldView<'a> {
     pub fn new(entity: Entity, world: &'a World) -> Option<Self> {
         let entity = world.entity(entity);
-        entity
-            .contains::<ComputedLayoutNodeMetadata>()
-            .then_some(Self { entity, world })
+        entity.contains::<Node>().then_some(Self { entity, world })
     }
 
     pub fn world(&self) -> &'a World {
@@ -144,31 +163,42 @@ impl<'a> NodeWorldView<'a> {
         NodeView(self.entity)
     }
 
-    pub fn metadata(&self) -> &LayoutNodeMetadata {
-        self.entity
-            .get::<LayoutNodeMetadata>()
-            .expect("NodeWorldView should always have access to LayoutNodeMetadata")
+    pub fn layout_id(&self) -> LayoutId {
+        *self
+            .entity
+            .get::<LayoutId>()
+            .expect("NodeWorldView should always have access to LayoutId")
     }
 
-    pub fn computed_metadata(&self) -> &ComputedLayoutNodeMetadata {
+    pub fn id(&self) -> &LayoutNodeId {
         self.entity
-            .get::<ComputedLayoutNodeMetadata>()
-            .expect("NodeWorldView should always have access to LayoutNodeMetadata")
+            .get::<LayoutNodeId>()
+            .expect("NodeWorldView should always have access to LayoutNodeId")
+    }
+
+    pub fn kind(&self) -> NodeKind {
+        *self
+            .entity
+            .get::<NodeKind>()
+            .expect("NodeWorldView should always have access to NodeKind")
+    }
+
+    pub fn node(&self) -> &Node {
+        self.entity
+            .get::<Node>()
+            .expect("NodeWorldView should always have access to Node")
     }
 
     pub fn as_text_node(&self) -> Option<TextNodeView<'a>> {
-        (self.computed_metadata().kind() == NodeKind::Text)
-            .then(|| TextNodeView(self.as_node_view()))
+        (self.kind() == NodeKind::Text).then(|| TextNodeView(self.as_node_view()))
     }
 
     pub fn as_image_node(&self) -> Option<ImageNodeView<'a>> {
-        (self.computed_metadata().kind() == NodeKind::Image)
-            .then(|| ImageNodeView(self.as_node_view()))
+        (self.kind() == NodeKind::Image).then(|| ImageNodeView(self.as_node_view()))
     }
 
     pub fn as_layout_node(&self) -> Option<LayoutNodeView<'a>> {
-        (self.computed_metadata().kind() == NodeKind::Layout)
-            .then(|| LayoutNodeView(self.as_node_view()))
+        (self.kind() == NodeKind::Layout).then(|| LayoutNodeView(self.as_entity()))
     }
 
     pub fn parent(&self) -> Option<NodeWorldView<'a>> {
@@ -184,7 +214,7 @@ impl<'a> NodeWorldView<'a> {
                 continue;
             };
 
-            if child.computed_metadata().id().name() == id.as_ref() {
+            if child.id().name() == id.as_ref() {
                 return Some(child);
             }
         }
@@ -197,9 +227,7 @@ pub struct NodeWorldViewMut<'a>(EntityWorldMut<'a>);
 
 impl<'a> NodeWorldViewMut<'a> {
     pub fn new(entity: EntityWorldMut<'a>) -> Option<Self> {
-        entity
-            .contains::<ComputedLayoutNodeMetadata>()
-            .then_some(Self(entity))
+        entity.contains::<Node>().then_some(Self(entity))
     }
 
     pub fn world<'b>(&'b self) -> &'b World {
@@ -226,57 +254,65 @@ impl<'a> NodeWorldViewMut<'a> {
         NodeViewMut(self.as_entity_mut())
     }
 
-    pub fn metadata(&self) -> &LayoutNodeMetadata {
-        self.0
-            .get::<LayoutNodeMetadata>()
-            .expect("NodeWorldViewMut should always have access to LayoutNodeMetadata")
+    pub fn layout_id(&self) -> LayoutId {
+        *self
+            .0
+            .get::<LayoutId>()
+            .expect("NodeWorldViewMut should always have access to LayoutId")
     }
 
-    pub fn metadata_mut(&mut self) -> Mut<'_, LayoutNodeMetadata> {
+    pub fn id(&self) -> &LayoutNodeId {
         self.0
-            .get_mut::<LayoutNodeMetadata>()
-            .expect("NodeWorldViewMut should always have access to LayoutNodeMetadata")
+            .get::<LayoutNodeId>()
+            .expect("NodeWorldViewMut should always have access to LayoutNodeId")
     }
 
-    pub fn computed_metadata(&self) -> &ComputedLayoutNodeMetadata {
+    pub fn kind(&self) -> NodeKind {
+        *self
+            .0
+            .get::<NodeKind>()
+            .expect("NodeWorldViewMut should always have access to NodeKind")
+    }
+
+    pub fn node(&self) -> &Node {
         self.0
-            .get::<ComputedLayoutNodeMetadata>()
-            .expect("NodeView should always have access to LayoutNodeMetadata")
+            .get::<Node>()
+            .expect("NodeViewMut should always have access to Node")
+    }
+
+    pub fn node_mut(&mut self) -> Mut<'_, Node> {
+        self.0
+            .get_mut::<Node>()
+            .expect("NodeViewMut should always have access to Node")
     }
 
     pub fn as_text_node<'b>(&'b self) -> Option<TextNodeView<'b>> {
-        (self.computed_metadata().kind() == NodeKind::Text)
-            .then(|| TextNodeView(self.as_node_view()))
+        (self.kind() == NodeKind::Text).then(|| TextNodeView(self.as_node_view()))
     }
 
     pub fn as_image_node<'b>(&'b self) -> Option<ImageNodeView<'b>> {
-        (self.computed_metadata().kind() == NodeKind::Image)
-            .then(|| ImageNodeView(self.as_node_view()))
+        (self.kind() == NodeKind::Image).then(|| ImageNodeView(self.as_node_view()))
     }
 
     pub fn as_layout_node<'b>(&'b self) -> Option<LayoutNodeView<'b>> {
-        (self.computed_metadata().kind() == NodeKind::Layout)
-            .then(|| LayoutNodeView(self.as_node_view()))
+        (self.kind() == NodeKind::Layout).then(|| LayoutNodeView(self.as_entity()))
     }
 
     pub fn as_text_node_mut<'b>(&'b mut self) -> Option<TextNodeViewMut<'b>> {
-        (self.computed_metadata().kind() == NodeKind::Text)
-            .then(|| TextNodeViewMut(self.as_node_view_mut()))
+        (self.kind() == NodeKind::Text).then(|| TextNodeViewMut(self.as_node_view_mut()))
     }
 
     pub fn as_image_node_mut<'b>(&'b mut self) -> Option<ImageNodeViewMut<'b>> {
-        (self.computed_metadata().kind() == NodeKind::Image)
-            .then(|| ImageNodeViewMut(self.as_node_view_mut()))
+        (self.kind() == NodeKind::Image).then(|| ImageNodeViewMut(self.as_node_view_mut()))
     }
 
     pub fn as_layout_node_mut<'b>(&'b mut self) -> Option<LayoutNodeViewMut<'b>> {
-        (self.computed_metadata().kind() == NodeKind::Layout)
-            .then(|| LayoutNodeViewMut(self.as_node_view_mut()))
+        (self.kind() == NodeKind::Layout).then(|| LayoutNodeViewMut(self.as_entity_mut()))
     }
 
     pub fn parent<'b>(&'b self) -> Option<NodeWorldView<'b>> {
         let parent = self.as_entity().get::<Parent>()?;
-        NodeWorldView::new(parent.get(), self.0.world())
+        NodeWorldView::new(parent.get(), self.world())
     }
 
     pub fn parent_scope<R>(&mut self, f: impl FnOnce(Option<NodeWorldViewMut<'_>>) -> R) -> R {
@@ -289,14 +325,15 @@ impl<'a> NodeWorldViewMut<'a> {
     }
 
     pub fn sibling<'b>(&'b self, id: impl AsRef<str>) -> Option<NodeWorldView<'b>> {
-        let parent = self.parent()?;
-        let children = parent.as_entity().get::<Children>()?;
+        let parent = self.as_entity().get::<Parent>()?;
+        let parent = self.world().entity(parent.get());
+        let children = parent.get::<Children>()?;
         for child in children.iter() {
             let Some(child) = NodeWorldView::new(*child, self.0.world()) else {
                 continue;
             };
 
-            if child.computed_metadata().id().name() == id.as_ref() {
+            if child.id().name() == id.as_ref() {
                 return Some(child);
             }
         }
@@ -326,7 +363,7 @@ impl<'a> NodeWorldViewMut<'a> {
                     return false;
                 };
 
-                child.computed_metadata().id().name() == id
+                child.id().name() == id
             });
 
             if let Some(sibling) = sibling {
@@ -347,7 +384,7 @@ impl<'a> NodeWorldViewMut<'a> {
                 continue;
             };
 
-            if child.computed_metadata().id().name() == id {
+            if child.id().name() == id {
                 return Some(child);
             }
         }
@@ -371,7 +408,7 @@ impl<'a> NodeWorldViewMut<'a> {
                 return false;
             };
 
-            child.computed_metadata().id().name() == id
+            child.id().name() == id
         });
 
         if let Some(child) = child {
@@ -522,12 +559,11 @@ impl<'a> ImageNodeViewMut<'a> {
     }
 }
 
-pub struct LayoutNodeView<'a>(NodeView<'a>);
+pub struct LayoutNodeView<'a>(EntityRef<'a>);
 
 impl<'a> LayoutNodeView<'a> {
     pub fn has_animation(&self, animation: impl AsRef<str>) -> bool {
         self.0
-            .as_entity()
             .get::<Animations>()
             .unwrap()
             .0
@@ -535,12 +571,11 @@ impl<'a> LayoutNodeView<'a> {
     }
 }
 
-pub struct LayoutNodeViewMut<'a>(NodeViewMut<'a>);
+pub struct LayoutNodeViewMut<'a>(EntityMut<'a>);
 
 impl<'a> LayoutNodeViewMut<'a> {
     pub fn has_animation(&self, animation: impl AsRef<str>) -> bool {
         self.0
-            .as_entity()
             .get::<Animations>()
             .unwrap()
             .0
@@ -548,13 +583,41 @@ impl<'a> LayoutNodeViewMut<'a> {
     }
 
     pub fn play_animation(&mut self, animation: impl AsRef<str>) {
-        *self
-            .0
-            .as_entity_mut()
-            .get_mut::<AnimationPlayerState>()
-            .unwrap() = AnimationPlayerState::Playing {
+        *self.0.get_mut::<AnimationPlayerState>().unwrap() = AnimationPlayerState::Playing {
             animation: animation.as_ref().to_string(),
             time_elapsed_ms: 0.0,
         };
     }
+}
+
+pub struct LayoutNodeWorldViewMut<'a>(EntityWorldMut<'a>);
+
+impl<'a> LayoutNodeWorldViewMut<'a> {
+    pub fn has_animation(&self, animation: impl AsRef<str>) -> bool {
+        self.0
+            .get::<Animations>()
+            .unwrap()
+            .0
+            .contains_key(animation.as_ref())
+    }
+
+    pub fn play_animation(&mut self, animation: impl AsRef<str>) {
+        *self.0.get_mut::<AnimationPlayerState>().unwrap() = AnimationPlayerState::Playing {
+            animation: animation.as_ref().to_string(),
+            time_elapsed_ms: 0.0,
+        };
+    }
+
+    // pub fn add_child<R>(&mut self, node: LayoutNode, f: impl FnOnce(EntityWorldMut<'_>) -> R) -> R {
+    //     let md = self.0.get::<LayoutNodeMetadata>().unwrap();
+    //     let metadata = LayoutNodeMetadata::new(
+    //         md.layout_id(),
+    //         Some(md.id().qualified().to_path_buf()),
+    //         &node,
+    //     );
+
+    //     let computed_metadata = ComputedLayoutNodeMetadata {};
+
+    //     self.0.world_scope(|world| {});
+    // }
 }

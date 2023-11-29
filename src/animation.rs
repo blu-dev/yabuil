@@ -1,39 +1,47 @@
 use std::{hint::unreachable_unchecked, sync::Arc};
 
-use bevy::{math::Vec2, prelude::*, utils::HashMap};
-use serde::Deserialize;
+use bevy::{ecs::query::WorldQuery, prelude::*, utils::HashMap};
 
-use crate::{components::LayoutNodeMetadata, views::NodeWorldViewMut};
+use crate::{views::NodeViewMut, LayoutAnimation};
+use serde::{Deserialize, Serialize};
 
-#[derive(Deserialize, Clone)]
-pub enum NodeAnimationTarget {
-    Position { start: Vec2, end: Vec2 },
-    Size { start: Vec2, end: Vec2 },
-    ImageColor { start: [f32; 4], end: [f32; 4] },
-    TextColor { start: [f32; 4], end: [f32; 4] },
+#[derive(Default, Deserialize, Serialize)]
+pub(crate) enum TimeBezierCurve {
+    #[default]
+    Linear,
+    Quadratic(f32),
+    Cubic(f32, f32),
 }
 
-#[derive(Deserialize, Clone)]
+impl TimeBezierCurve {
+    pub fn map(&self, current: f32) -> f32 {
+        match self {
+            Self::Linear => current,
+            Self::Quadratic(quad) => {
+                0.0 + 2.0 * (1.0 - current) * current * *quad + current.powi(2)
+            }
+            Self::Cubic(a, b) => {
+                0.0 + 3.0 * (1.0 - current).powi(2) * current * *a
+                    + (1.0 - current) * current.powi(2) * *b
+                    + current.powi(3)
+            }
+        }
+    }
+}
+
 pub struct NodeAnimation {
-    id: String,
-    time_ms: f32,
-    target: NodeAnimationTarget,
+    pub(crate) id: String,
+    pub(crate) time_ms: f32,
+    pub(crate) time_scale: TimeBezierCurve,
+    pub(crate) target: Box<dyn LayoutAnimation>,
 }
 
 #[derive(Clone, Component, Default)]
 pub struct Animations(pub(crate) Arc<HashMap<String, Vec<NodeAnimation>>>);
 
-impl<'de> Deserialize<'de> for Animations {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        <HashMap<String, Vec<NodeAnimation>>>::deserialize(deserializer).map(|m| Self(Arc::new(m)))
-    }
-}
-
-#[derive(Component)]
+#[derive(Component, Default)]
 pub(crate) enum AnimationPlayerState {
+    #[default]
     NotPlaying,
     Playing {
         animation: String,
@@ -47,104 +55,147 @@ impl AnimationPlayerState {
     }
 }
 
+#[derive(WorldQuery)]
+#[world_query(mutable)]
+struct SomeQuery {
+    item: &'static Children,
+    other_item: &'static mut AnimationPlayerState,
+}
+
 pub(crate) fn update_ui_layout_animations(
-    commands: ParallelCommands,
-    time: Res<Time>,
-    mut query: Query<(Entity, &mut AnimationPlayerState, &Animations, &Children)>,
-    metadata: Query<&mut LayoutNodeMetadata>,
+    mut disjoint: ParamSet<(Res<Time>, Query<EntityMut<'_>, With<crate::node::Node>>)>,
 ) {
-    let delta = time.delta_seconds() * 1000.0;
-    query
-        .par_iter_mut()
-        .for_each(|(entity, mut state, anims, children)| {
-            if !state.is_playing() {
-                return;
-            }
+    let delta = disjoint.p0().delta_seconds() * 1000.0;
+    let query = disjoint.p1();
+    // SAFETY: This is safe because we are still only accessing one entity at a time
+    // (see safety comments below)
+    for mut entity in unsafe { query.iter_unsafe() } {
+        let Some(mut state) = entity.get_mut::<AnimationPlayerState>() else {
+            continue;
+        };
 
-            let AnimationPlayerState::Playing {
-                animation,
-                time_elapsed_ms,
-            } = &mut *state
-            else {
-                // SAFETY: we ensure above
-                unsafe { unreachable_unchecked() }
-            };
+        if !state.is_playing() {
+            continue;
+        }
 
-            let mut is_finished = true;
-            *time_elapsed_ms += delta;
-            let progress = *time_elapsed_ms;
+        let mut state = std::mem::take(&mut *state);
 
-            if let Some(animation) = anims.0.get(animation.as_str()) {
-                'outer: for animation in animation.iter() {
-                    for child in children.iter().copied() {
-                        // SAFETY: this system will ensure exclusive acess to the components,
-                        // and we are only calling these on this node's children, where a
-                        // child entity can only be the child of one entity
-                        let mut metadata = unsafe { metadata.get_unchecked(child).unwrap() };
-                        if metadata.id().name() == animation.id.as_str() {
-                            is_finished &= progress >= animation.time_ms;
-                            let interp = (progress / animation.time_ms).clamp(0.0, 1.0);
-                            match &animation.target {
-                                NodeAnimationTarget::Position { start, end } => {
-                                    metadata.position = *start * (1.0 - interp) + *end * interp;
-                                }
-                                NodeAnimationTarget::Size { start, end } => {
-                                    metadata.size = *start * (1.0 - interp) + *end * interp;
-                                }
-                                NodeAnimationTarget::ImageColor { start, end } => {
-                                    let start_color =
-                                        Color::rgb(start[0], start[1], start[2]).as_hsla();
-                                    let end_color = Color::rgb(end[0], end[1], end[2]).as_hsla();
+        let AnimationPlayerState::Playing {
+            animation,
+            time_elapsed_ms,
+        } = &mut state
+        else {
+            // SAFETY: we ensure above
+            unsafe { unreachable_unchecked() }
+        };
 
-                                    let mut color =
-                                        start_color * (1.0 - interp) + end_color * interp;
+        let mut is_finished = true;
+        *time_elapsed_ms += delta;
+        let progress = *time_elapsed_ms;
 
-                                    color.set_a(start[3] * (1.0 - interp) + end[3] * interp);
+        let anims = entity.get::<Animations>().unwrap();
 
-                                    commands.command_scope(move |mut commands| {
-                                        commands.entity(child).add(
-                                            move |entity: EntityWorldMut| {
-                                                let mut node =
-                                                    NodeWorldViewMut::new(entity).unwrap();
-                                                node.as_image_node_mut()
-                                                    .unwrap()
-                                                    .update_sprite(|sprite| sprite.color = color);
-                                            },
-                                        );
-                                    });
-                                }
-                                NodeAnimationTarget::TextColor { start, end } => {
-                                    let start_color =
-                                        Color::rgb(start[0], start[1], start[2]).as_hsla();
-                                    let end_color = Color::rgb(end[0], end[1], end[2]).as_hsla();
-
-                                    let mut color =
-                                        start_color * (1.0 - interp) + end_color * interp;
-
-                                    color.set_a(start[3] * (1.0 - interp) + end[3] * interp);
-                                    commands.command_scope(move |mut commands| {
-                                        commands.entity(child).add(
-                                            move |entity: EntityWorldMut| {
-                                                let mut node =
-                                                    NodeWorldViewMut::new(entity).unwrap();
-                                                node.as_text_node_mut().unwrap().set_color(color);
-                                            },
-                                        );
-                                    });
-                                }
-                            }
-                            continue 'outer;
-                        }
+        if let Some(animation) = anims.0.get(animation.as_str()) {
+            'outer: for animation in animation.iter() {
+                let children = entity.get::<Children>().unwrap();
+                for child in children.iter().copied() {
+                    // SAFETY: This is safe because we are iterating over the components serially
+                    //          and therefore we won't be holding a reference to any of the children
+                    let entity = unsafe { query.get_unchecked(child).unwrap() };
+                    let mut node_view = NodeViewMut::new(entity).unwrap();
+                    if node_view.id().name() == animation.id.as_str() {
+                        is_finished &= progress >= animation.time_ms;
+                        let interp = (progress / animation.time_ms).clamp(0.0, 1.0);
+                        animation
+                            .target
+                            .interpolate(&mut node_view, animation.time_scale.map(interp));
+                        continue 'outer;
                     }
-
-                    log::warn!("Could not find node '{}' for animation", animation.id);
                 }
-            } else {
-                log::warn!("Failed to get animation {} for node", animation);
-            }
 
-            if is_finished {
-                *state = AnimationPlayerState::NotPlaying;
+                log::warn!("Could not find node '{}' for animation", animation.id);
             }
-        });
+        } else {
+            log::warn!("Failed to get animation {} for node", animation);
+        }
+
+        if is_finished {
+            state = AnimationPlayerState::NotPlaying;
+        }
+
+        *entity.get_mut::<AnimationPlayerState>().unwrap() = state;
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct PositionAnimation {
+    pub start: Vec2,
+    pub end: Vec2,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct SizeAnimation {
+    pub start: Vec2,
+    pub end: Vec2,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ColorAnimation {
+    start: [f32; 4],
+    end: [f32; 4],
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ImageColorAnimation(ColorAnimation);
+
+#[derive(Serialize, Deserialize)]
+pub struct TextColorAnimation(ColorAnimation);
+
+impl LayoutAnimation for PositionAnimation {
+    fn apply(&self, _layout: &mut crate::views::NodeWorldViewMut) {}
+
+    fn interpolate(&self, node: &mut NodeViewMut, interpolation: f32) {
+        node.node_mut().position = self.start * (1.0 - interpolation) + self.end * interpolation;
+    }
+}
+
+impl LayoutAnimation for SizeAnimation {
+    fn apply(&self, _layout: &mut crate::views::NodeWorldViewMut) {}
+    fn interpolate(&self, node: &mut NodeViewMut, interpolation: f32) {
+        node.node_mut().size = self.start * (1.0 - interpolation) + self.end * interpolation;
+    }
+}
+
+impl ColorAnimation {
+    fn interpolate(&self, interp: f32) -> Color {
+        let [r1, g1, b1, a1] = self.start;
+        let [r2, g2, b2, a2] = self.end;
+        let start_color = Color::rgb(r1, g1, b1).as_hsla();
+        let end_color = Color::rgb(r2, g2, b2).as_hsla();
+
+        let mut color = start_color * (1.0 - interp) + end_color * interp;
+
+        color.set_a(a1 * (1.0 - interp) + a2 * interp);
+        color
+    }
+}
+
+impl LayoutAnimation for ImageColorAnimation {
+    fn apply(&self, _layout: &mut crate::views::NodeWorldViewMut) {}
+
+    fn interpolate(&self, node: &mut NodeViewMut, interpolation: f32) {
+        node.as_image_node_mut().unwrap().update_sprite(|style| {
+            style.color = self.0.interpolate(interpolation);
+        })
+    }
+}
+
+impl LayoutAnimation for TextColorAnimation {
+    fn apply(&self, _layout: &mut crate::views::NodeWorldViewMut) {}
+
+    fn interpolate(&self, node: &mut NodeViewMut, interpolation: f32) {
+        node.as_text_node_mut()
+            .unwrap()
+            .set_color(self.0.interpolate(interpolation));
+    }
 }

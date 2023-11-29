@@ -8,23 +8,21 @@ use bevy::{
         camera::{ManualTextureViews, RenderTarget},
         view::RenderLayers,
     },
-    sprite::Anchor,
-    text::Text2dBounds,
-    utils::{HashMap, HashSet},
     window::{PrimaryWindow, WindowRef},
 };
 use thiserror::Error;
 
 use crate::{
     animation::AnimationPlayerState,
-    asset::{Layout, LayoutNode, LayoutNodeData, NodeAnchor},
+    asset::{Layout, LayoutNodeData},
+    node::{Anchor, LayoutInfo, ZIndex},
     views::NodeWorldViewMut,
 };
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Component, Reflect)]
 pub struct LayoutId(pub(crate) Entity);
 
-#[derive(Clone)]
+#[derive(Clone, Component, Reflect)]
 pub struct LayoutNodeId(PathBuf);
 
 impl LayoutNodeId {
@@ -35,9 +33,13 @@ impl LayoutNodeId {
     pub fn name(&self) -> &str {
         self.0.file_name().unwrap().to_str().unwrap()
     }
+
+    pub fn join(&self, id: &str) -> Self {
+        Self(self.0.clone().join(id))
+    }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Component, Reflect)]
 pub enum NodeKind {
     Null,
     Image,
@@ -48,89 +50,6 @@ pub enum NodeKind {
 #[derive(Component)]
 pub struct ActiveLayout;
 
-#[derive(Component)]
-pub struct LayoutNodeMetadata {
-    kind: NodeKind,
-    layout: LayoutId,
-    id: LayoutNodeId,
-    anchor: NodeAnchor,
-    pub position: Vec2,
-    pub size: Vec2,
-}
-
-impl LayoutNodeMetadata {
-    pub fn new(layout_id: LayoutId, parent_id: Option<PathBuf>, node: &LayoutNode) -> Self {
-        Self {
-            kind: match &node.inner {
-                LayoutNodeData::Null => NodeKind::Null,
-                LayoutNodeData::Text { .. } => NodeKind::Text,
-                LayoutNodeData::Image { .. } => NodeKind::Image,
-                LayoutNodeData::Layout { .. } => NodeKind::Layout,
-            },
-            layout: layout_id,
-            id: LayoutNodeId(
-                parent_id
-                    .map(|parent| parent.join(node.id.as_str()))
-                    .unwrap_or_else(|| PathBuf::from(node.id.clone())),
-            ),
-            anchor: node.anchor,
-            position: node.position,
-            size: node.size,
-        }
-    }
-
-    pub fn kind(&self) -> NodeKind {
-        self.kind
-    }
-
-    pub fn layout_id(&self) -> LayoutId {
-        self.layout
-    }
-
-    pub fn id(&self) -> &LayoutNodeId {
-        &self.id
-    }
-}
-
-#[derive(Component)]
-pub struct ComputedLayoutNodeMetadata {
-    kind: NodeKind,
-    layout: LayoutId,
-    bounding_box: Rect,
-    id: LayoutNodeId,
-    resolution_scale: Vec2,
-    camera_center: Vec2,
-
-    layout_resolution: Vec2,
-    layout_canvas_size: Vec2,
-}
-
-impl ComputedLayoutNodeMetadata {
-    pub fn kind(&self) -> NodeKind {
-        self.kind
-    }
-
-    pub fn layout_id(&self) -> LayoutId {
-        self.layout
-    }
-
-    pub fn bounding_box(&self) -> Rect {
-        self.bounding_box
-    }
-
-    pub fn id(&self) -> &LayoutNodeId {
-        &self.id
-    }
-
-    pub fn resolution_scale(&self) -> Vec2 {
-        self.resolution_scale
-    }
-
-    pub fn camera_center(&self) -> Vec2 {
-        self.camera_center
-    }
-}
-
 #[derive(Component, PartialEq, Eq)]
 pub(crate) enum PendingStatus {
     AwaitingCreation,
@@ -140,7 +59,6 @@ pub(crate) enum PendingStatus {
 #[derive(Component)]
 pub struct RootNode {
     handle: Handle<Layout>,
-    nodes: HashMap<String, Entity>,
 }
 
 #[derive(Bundle)]
@@ -154,10 +72,7 @@ pub struct LayoutBundle {
 impl LayoutBundle {
     pub fn new(handle: Handle<Layout>) -> Self {
         Self {
-            root: RootNode {
-                handle,
-                nodes: HashMap::new(),
-            },
+            root: RootNode { handle },
             awaiting_creation: PendingStatus::AwaitingCreation,
             visibility: VisibilityBundle {
                 visibility: Visibility::Hidden,
@@ -183,68 +98,34 @@ enum SpawnLayoutError {
     NotLoaded,
 }
 
-struct LayoutBuilder<'a> {
-    pub root_node: Entity,
-    pub root_resolution: UVec2,
-    pub allocated_size: Vec2,
-    pub parent_origin: Vec2,
-    pub parent_node_path: Option<PathBuf>,
-    pub z_offset: &'a mut f32,
-}
-
-impl LayoutBuilder<'_> {
-    pub fn create_metadata(
-        &self,
-        layout: &Layout,
-        node: &LayoutNodeMetadata,
-    ) -> ComputedLayoutNodeMetadata {
-        let resolution_scale = (self.root_resolution.as_vec2() / layout.get_resolution().as_vec2())
-            * (self.allocated_size / layout.canvas_size.as_vec2());
-
-        let tl = node.anchor.calculate_origin(node.position, node.size) * resolution_scale
-            + self.parent_origin;
-        let br = tl + node.size * resolution_scale;
-
-        let mut center = node.anchor.calculate_center(node.position, node.size) * resolution_scale;
-        center.y = self.allocated_size.y as f32 - center.y;
-
-        ComputedLayoutNodeMetadata {
-            kind: node.kind(),
-            layout: node.layout_id(),
-            bounding_box: Rect::from_corners(tl, br),
-            id: node.id().clone(),
-            resolution_scale,
-            camera_center: center,
-            layout_resolution: layout.get_resolution().as_vec2(),
-            layout_canvas_size: layout.canvas_size.as_vec2(),
-        }
-    }
-}
-
 fn spawn_layout_recursive(
     world: &mut World,
     assets: &Assets<Layout>,
     layout_id: AssetId<Layout>,
     current_node: Entity,
-    builder: LayoutBuilder,
+    root_id: LayoutId,
+    parent_id: LayoutNodeId,
+    z_index: &mut ZIndex,
 ) -> Result<(), SpawnLayoutError> {
     let layout = assets.get(layout_id).ok_or(SpawnLayoutError::NotLoaded)?;
 
-    for node in layout.nodes.iter() {
-        let local_metadata = LayoutNodeMetadata::new(
-            LayoutId(builder.root_node),
-            builder.parent_node_path.clone(),
-            node,
-        );
-        let metadata = builder.create_metadata(layout, &local_metadata);
+    let mut nodes_to_init = vec![];
 
-        let bounding_box = metadata.bounding_box;
-        let scaling = metadata.resolution_scale;
-        let node_id = metadata.id.0.clone();
-        let mut transform =
-            Transform::from_translation(metadata.camera_center.extend(*builder.z_offset));
-        *builder.z_offset += 0.01;
-        let child = world.spawn((metadata, local_metadata));
+    for node in layout.nodes.iter() {
+        let layout_node = crate::node::Node {
+            anchor: node.anchor,
+            position: node.position,
+            size: node.size,
+            rotation: node.rotation,
+        };
+
+        let child = world.spawn((
+            layout_node,
+            parent_id.join(node.id.as_str()),
+            root_id,
+            z_index.fetch_inc(),
+        ));
+
         let child = child.id();
         world.entity_mut(current_node).add_child(child);
         let mut child = world.entity_mut(child);
@@ -252,20 +133,28 @@ fn spawn_layout_recursive(
         match &node.inner {
             LayoutNodeData::Null => {
                 child.insert((
-                    TransformBundle::from_transform(transform),
+                    TransformBundle::default(),
                     VisibilityBundle::default(),
+                    NodeKind::Null,
                 ));
             }
-            LayoutNodeData::Image { handle, .. } => {
-                child.insert(SpriteBundle {
-                    sprite: Sprite {
-                        custom_size: Some(bounding_box.size()),
+            LayoutNodeData::Image { handle, tint, .. } => {
+                let color = tint
+                    .map(|[r, g, b, a]| Color::rgba(r, g, b, a))
+                    .unwrap_or(Color::WHITE);
+
+                child.insert((
+                    SpriteBundle {
+                        sprite: Sprite {
+                            color,
+                            custom_size: Some(node.size),
+                            ..default()
+                        },
+                        texture: handle.clone(),
                         ..default()
                     },
-                    texture: handle.clone(),
-                    transform,
-                    ..default()
-                });
+                    NodeKind::Image,
+                ));
             }
             LayoutNodeData::Text {
                 text,
@@ -276,66 +165,66 @@ fn spawn_layout_recursive(
                 ..
             } => {
                 let anchor = match alignment {
-                    TextAlignment::Left => {
-                        transform.translation.x -= bounding_box.half_size().x * scaling.x;
-                        Anchor::CenterLeft
-                    }
-                    TextAlignment::Center => Anchor::Center,
-                    TextAlignment::Right => {
-                        transform.translation.x += bounding_box.half_size().x * scaling.x;
-                        Anchor::CenterRight
-                    }
+                    TextAlignment::Left => bevy::sprite::Anchor::CenterLeft,
+                    TextAlignment::Center => bevy::sprite::Anchor::Center,
+                    TextAlignment::Right => bevy::sprite::Anchor::CenterRight,
                 };
-                child.insert(Text2dBundle {
-                    text: Text::from_section(
-                        text.clone(),
-                        TextStyle {
-                            font: handle.clone(),
-                            font_size: *size,
-                            color: Color::rgba(color[0], color[1], color[2], color[3]),
-                        },
-                    ),
-                    text_2d_bounds: Text2dBounds {
-                        size: bounding_box.size(),
+
+                child.insert((
+                    Text2dBundle {
+                        text: Text::from_section(
+                            text.clone(),
+                            TextStyle {
+                                font: handle.clone(),
+                                font_size: *size,
+                                color: Color::rgba(color[0], color[1], color[2], color[3]),
+                            },
+                        ),
+                        text_anchor: anchor,
+                        ..default()
                     },
-                    text_anchor: anchor,
-                    transform,
-                    ..default()
-                });
+                    NodeKind::Text,
+                ));
             }
             LayoutNodeData::Layout { handle, .. } => {
-                let Some(layout) = assets.get(handle.id()) else {
+                let Some(child_layout) = assets.get(handle.id()) else {
                     return Err(SpawnLayoutError::NotLoaded);
                 };
 
-                // Move the transform for this to the bottom right so that the transform math
-                // of child nodes adds up
-                transform.translation -= bounding_box.half_size().extend(0.0);
                 child.insert((
-                    TransformBundle::from_transform(transform),
+                    TransformBundle::default(),
                     VisibilityBundle::default(),
-                    layout.animations.clone(),
+                    child_layout.animations.clone(),
                     AnimationPlayerState::NotPlaying,
+                    NodeKind::Layout,
+                    LayoutInfo {
+                        resolution_scale: layout.get_resolution().as_vec2()
+                            / child_layout.get_resolution().as_vec2(),
+                        canvas_size: child_layout.canvas_size.as_vec2(),
+                    },
                 ));
-
-                let builder = LayoutBuilder {
-                    root_node: builder.root_node,
-                    root_resolution: builder.root_resolution,
-                    allocated_size: node.size,
-                    parent_origin: bounding_box.min,
-                    parent_node_path: Some(node_id),
-                    z_offset: builder.z_offset,
-                };
 
                 let current_node = child.id();
 
-                spawn_layout_recursive(world, assets, handle.id(), current_node, builder)?;
+                spawn_layout_recursive(
+                    world,
+                    assets,
+                    handle.id(),
+                    current_node,
+                    root_id,
+                    parent_id.join(node.id.as_str()),
+                    z_index,
+                )?;
 
                 child = world.entity_mut(current_node);
             }
         }
 
-        let mut child = NodeWorldViewMut::new(child).unwrap();
+        nodes_to_init.push(child.id());
+    }
+
+    for (node, entity) in layout.nodes.iter().zip(nodes_to_init.into_iter()) {
+        let mut child = NodeWorldViewMut::new(world.entity_mut(entity)).unwrap();
 
         for attribute in node.attributes.iter() {
             attribute.apply(&mut child);
@@ -389,32 +278,45 @@ pub(crate) fn spawn_layout_system(
         let entity = root.entity;
 
         commands.add(move |world: &mut World| {
-            let result =
+            let result: Result<(), SpawnLayoutError> =
                 world.resource_scope::<Assets<Layout>, _>(|world, layouts| {
                     let root = layouts.get(handle_id).ok_or(SpawnLayoutError::NotLoaded)?;
-                    let resolution = root.get_resolution();
-
+                    let id = LayoutNodeId(PathBuf::from("__root"));
                     spawn_layout_recursive(
                         world,
                         &layouts,
                         handle_id,
                         entity,
-                        LayoutBuilder {
-                            root_node: entity,
-                            root_resolution: resolution,
-                            allocated_size: root.canvas_size.as_vec2(),
-                            parent_origin: Vec2::default(),
-                            parent_node_path: None,
-                            z_offset: &mut 0.0,
+                        LayoutId(entity),
+                        id.clone(),
+                        &mut ZIndex::default(),
+                    )?;
+
+                    world.entity_mut(entity).insert((
+                        root.animations.clone(),
+                        AnimationPlayerState::NotPlaying,
+                        LayoutInfo {
+                            resolution_scale: Vec2::ONE,
+                            canvas_size: root.canvas_size.as_vec2(),
                         },
-                    )
+                        crate::node::Node {
+                            anchor: Anchor::TopLeft,
+                            position: Vec2::ZERO,
+                            size: root.canvas_size.as_vec2(),
+                            rotation: 0.0,
+                        },
+                        LayoutId(entity),
+                        id,
+                        NodeKind::Layout,
+                    ));
+
+                    Ok(())
                 });
 
             let mut root = world.entity_mut(entity);
 
             if let Err(e) = result {
                 log::error!("Failed to load layout: {e}");
-                root.despawn_descendants();
                 *root.get_mut::<PendingStatus>().unwrap() = PendingStatus::Failed;
             } else {
                 root.remove::<PendingStatus>();
@@ -504,114 +406,11 @@ pub(crate) fn update_ui_layout_transform(
 
         let scale = render_target_size.as_vec2() / node.canvas_size.as_vec2();
         transform.scale = scale.extend(1.0);
-        transform.translation = {
-            let he = render_target_size.as_vec2() / -2.0;
-            he.extend(0.0)
-        };
-    }
-}
+        // transform.translation = {
+        //     let he = render_target_size.as_vec2() / -2.0;
+        //     he.extend(0.0)
+        // };
 
-pub(crate) fn node_metadata_propagate(
-    children: Query<&Children>,
-    roots: Query<(Entity, &RootNode)>,
-    nodes: Query<
-        (
-            Entity,
-            &Parent,
-            Ref<LayoutNodeMetadata>,
-            &mut ComputedLayoutNodeMetadata,
-            &mut Transform,
-        ),
-        Without<RootNode>,
-    >,
-    anchors: Query<&Anchor>,
-    mut updated_cache: Local<HashSet<Entity>>,
-    layouts: Res<Assets<Layout>>,
-) {
-    updated_cache.clear();
-
-    for (entity, root) in roots.iter() {
-        let Some(layout) = layouts.get(root.handle.id()) else {
-            continue;
-        };
-
-        for descendant in children.iter_descendants(entity) {
-            // SAFETY: we are not running in parallel, at max this loop iteration will only access
-            // a single node and it's parent at a time, which are distinct entities.
-            let (this_node, parent, metadata, mut computed, mut transform) = unsafe {
-                nodes
-                    .get_unchecked(descendant)
-                    .expect("Descendant of layout root should be a node")
-            };
-            let should_update = if parent.get() == entity {
-                metadata.is_changed()
-            } else {
-                // iter_descendants is breadth-first so this works for propagating changes
-                updated_cache.contains(&parent.get()) || metadata.is_changed()
-            };
-
-            if !should_update {
-                continue;
-            }
-
-            updated_cache.insert(this_node);
-
-            // If the parent is the root node, we are the root of propagation
-            let (resolution_scale, parent_origin, parent_height) = if parent.get() == entity {
-                (Vec2::ONE, Vec2::ZERO, layout.canvas_size.y as f32)
-            } else {
-                let (_, _, parent_meta, parent_computed, _) = nodes
-                    .get(parent.get())
-                    .expect("Descendant of layout root should be a node");
-
-                let resolution_scale = (layout.get_resolution().as_vec2()
-                    / computed.layout_resolution)
-                    * (parent_meta.size / computed.layout_canvas_size);
-
-                (
-                    resolution_scale,
-                    parent_computed.bounding_box.min,
-                    parent_meta.size.y,
-                )
-            };
-
-            let tl = metadata
-                .anchor
-                .calculate_origin(metadata.position, metadata.size)
-                * resolution_scale
-                + parent_origin;
-
-            let br = tl + metadata.size * resolution_scale;
-
-            let mut center = metadata
-                .anchor
-                .calculate_center(metadata.position, metadata.size)
-                * resolution_scale;
-
-            center.y = parent_height as f32 - center.y;
-
-            computed.bounding_box = Rect::from_corners(tl, br);
-            computed.resolution_scale = resolution_scale;
-            transform.translation.x = center.x;
-            transform.translation.y = center.y;
-
-            match metadata.kind() {
-                NodeKind::Layout => {
-                    transform.translation -= computed.bounding_box.half_size().extend(0.0);
-                }
-                NodeKind::Text => match anchors.get(this_node).unwrap() {
-                    Anchor::CenterLeft => {
-                        transform.translation.x -= computed.bounding_box.half_size().x
-                    }
-                    Anchor::CenterRight => {
-                        transform.translation.x += computed.bounding_box.half_size().x
-                    }
-                    _ => {}
-                },
-                _ => {}
-            }
-
-            if metadata.kind() == NodeKind::Layout {}
-        }
+        transform.translation = Vec3::ZERO;
     }
 }

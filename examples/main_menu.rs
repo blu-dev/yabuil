@@ -5,61 +5,15 @@ use bevy::{
     },
     prelude::*,
 };
+use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use serde::{Deserialize, Serialize};
 use yabuil::{
     asset::Layout,
     input_detection::{LayoutCursorPosition, LayoutCursors, LayoutNodeInputDetection},
+    node::ComputedBoundingBox,
     views::NodeWorldViewMut,
-    ActiveLayout, ComputedLayoutNodeMetadata, LayoutApp, LayoutAttribute, LayoutBundle,
-    LayoutNodeMetadata, LayoutPlugin,
+    ActiveLayout, LayoutApp, LayoutAttribute, LayoutBundle, LayoutPlugin,
 };
-
-#[derive(Component)]
-pub struct AnimateMenuButton {
-    starting_image_color: Color,
-    target_image_color: Color,
-    starting_text_color: Color,
-    target_text_color: Color,
-    time: f32,
-    progress: f32,
-}
-
-pub fn animate_menu_button_system(
-    time: Res<Time>,
-    mut commands: Commands,
-    mut buttons: Query<(Entity, &mut AnimateMenuButton), With<MainMenuButton>>,
-) {
-    let delta = time.delta_seconds() * 1000.0;
-    for (entity, mut state) in buttons.iter_mut() {
-        state.progress += delta;
-
-        let (image_color, text_color) = if state.progress >= state.time {
-            commands.entity(entity).remove::<AnimateMenuButton>();
-            (state.target_image_color, state.target_text_color)
-        } else {
-            let interp = state.progress / state.time;
-            (
-                state.starting_image_color * (1.0f32 - interp) + state.target_image_color * interp,
-                state.starting_text_color * (1.0f32 - interp) + state.target_text_color * interp,
-            )
-        };
-
-        commands.entity(entity).add(move |entity: EntityWorldMut| {
-            let mut node = NodeWorldViewMut::new(entity).unwrap();
-            node.child_scope("button_image", |node| {
-                let mut node = node.unwrap();
-                node.as_image_node_mut().unwrap().update_sprite(|sprite| {
-                    sprite.color = image_color;
-                });
-            });
-
-            node.child_scope("button_text", |node| {
-                let mut node = node.unwrap();
-                node.as_text_node_mut().unwrap().set_color(text_color);
-            });
-        });
-    }
-}
 
 #[derive(Debug, Serialize, Deserialize, Component)]
 pub struct ControllerCursor {}
@@ -74,6 +28,7 @@ impl LayoutAttribute for ControllerCursor {
                 right_click: false,
                 middle_click: false,
             },
+            ComputedBoundingBox::default(),
         ));
 
         let id = world.as_entity().id();
@@ -85,7 +40,6 @@ impl LayoutAttribute for ControllerCursor {
             "exit_button",
         ] {
             world.sibling_scope(sibling, |node| {
-                println!("{sibling}");
                 let mut node = node.unwrap();
                 node.child_scope("button_hit", |node| {
                     let mut node = node.unwrap();
@@ -104,15 +58,14 @@ fn update_controller_cursor_node(
     axes: Res<Axis<GamepadAxis>>,
     mut nodes: Query<
         (
-            &mut LayoutNodeMetadata,
-            &ComputedLayoutNodeMetadata,
             &mut LayoutCursorPosition,
-            &GlobalTransform,
+            &mut yabuil::node::Node,
+            &ComputedBoundingBox,
         ),
         With<ControllerCursor>,
     >,
 ) {
-    let Ok((mut node, computed, mut cursor, trans)) = nodes.get_single_mut() else {
+    let Ok((mut cursor, mut node, bbox)) = nodes.get_single_mut() else {
         return;
     };
 
@@ -130,8 +83,7 @@ fn update_controller_cursor_node(
     direction.y *= -1.0;
 
     node.position += direction * 5.0;
-    cursor.position =
-        (computed.bounding_box().center() + direction * 5.0) * trans.compute_transform().scale.xy();
+    cursor.position = bbox.center() + direction * 5.0;
 }
 
 #[derive(Debug, Serialize, Deserialize, Component, Copy, Clone)]
@@ -143,12 +95,6 @@ pub enum MainMenuButton {
 }
 
 fn animate_menu_button(button: &mut NodeWorldViewMut, on: bool) {
-    let (start, target) = if on {
-        (Color::GRAY.as_hsla(), Color::WHITE.as_hsla())
-    } else {
-        (Color::WHITE.as_hsla(), Color::GRAY.as_hsla())
-    };
-
     let animation = if on { "select" } else { "unselect" };
 
     button.parent_scope(|parent| {
@@ -157,21 +103,6 @@ fn animate_menu_button(button: &mut NodeWorldViewMut, on: bool) {
             .as_layout_node_mut()
             .unwrap()
             .play_animation(animation);
-        let parent = parent.as_entity_world_mut();
-        let progress = if let Some(state) = parent.get::<AnimateMenuButton>() {
-            100.0 - state.progress
-        } else {
-            0.0
-        };
-
-        parent.insert(AnimateMenuButton {
-            starting_image_color: start,
-            target_image_color: target,
-            starting_text_color: start,
-            target_text_color: target,
-            time: 100.0,
-            progress,
-        });
     });
 }
 
@@ -247,14 +178,15 @@ fn startup_system(mut commands: Commands, asset_server: Res<AssetServer>) {
 
 pub fn main() {
     App::new()
-        .add_plugins((DefaultPlugins, LayoutPlugin))
+        .add_plugins((
+            DefaultPlugins,
+            LayoutPlugin,
+            WorldInspectorPlugin::default(),
+        ))
         .register_layout_attribute::<MainMenuButton>("MainMenuButton")
         .register_layout_attribute::<ControllerCursor>("ControllerCursor")
         .add_systems(Startup, startup_system)
-        .add_systems(
-            Update,
-            (animate_menu_button_system, update_controller_cursor_node),
-        )
+        .add_systems(Update, update_controller_cursor_node)
         .add_systems(Update, bevy::window::close_on_esc)
         .run();
 }

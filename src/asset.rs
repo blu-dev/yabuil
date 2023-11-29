@@ -5,19 +5,20 @@ use std::{
 
 use bevy::{
     asset::{Asset, AssetLoader, AsyncReadExt, Handle, VisitAssetDependencies},
-    math::{vec2, UVec2, Vec2},
+    math::{UVec2, Vec2},
     reflect::TypePath,
     render::texture::Image,
-    sprite::Anchor,
     text::{Font, TextAlignment},
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    animation::Animations, AttributeRegistryInner, LayoutAttribute, RestrictedLoadContext,
+    animation::Animations, node::Anchor, LayoutAttribute, LayoutRegistryInner,
+    RestrictedLoadContext,
 };
 use thiserror::Error;
 
+mod deserialize_animation;
 mod deserialize_layout;
 
 /// A collection of nodes with an associated coordinate system and resolution
@@ -60,6 +61,10 @@ impl VisitAssetDependencies for Layout {
                 attribute.visit_dependencies(visit);
             }
         }
+
+        for node_anim in self.animations.0.values().flat_map(|anim| anim.iter()) {
+            node_anim.target.visit_dependencies(visit);
+        }
     }
 }
 
@@ -72,6 +77,7 @@ impl Layout {
 }
 
 /// A single node in a layout
+#[derive(Default)]
 pub struct LayoutNode {
     /// The unique id of a node
     ///
@@ -89,8 +95,13 @@ pub struct LayoutNode {
     /// This size is in the layout's resolution
     pub size: Vec2,
 
+    /// The rotation of this node
+    ///
+    /// This is in degrees, and will default to 0.0 when not present
+    pub rotation: f32,
+
     /// Which part of this node to attach to the position
-    pub anchor: NodeAnchor,
+    pub anchor: Anchor,
 
     /// Built-in supported node data for this node.
     ///
@@ -98,99 +109,27 @@ pub struct LayoutNode {
     pub inner: LayoutNodeData,
 
     /// User-space attributes for each node
-    pub attributes: Vec<Box<dyn LayoutAttribute>>,
-}
-
-impl LayoutNode {
-    pub fn get_anchored_origin(&self) -> Vec2 {
-        self.anchor.calculate_origin(self.position, self.size)
-    }
-
-    pub fn get_anchored_center(&self) -> Vec2 {
-        self.anchor.calculate_center(self.position, self.size)
-    }
-}
-
-/// Which part of the node to attach to the position
-#[derive(Deserialize, Serialize, Copy, Clone, PartialEq, Eq, Default)]
-pub enum NodeAnchor {
-    TopLeft,
-    TopCenter,
-    TopRight,
-    CenterLeft,
-    #[default]
-    Center,
-    CenterRight,
-    BottomLeft,
-    BottomCenter,
-    BottomRight,
-}
-
-impl From<NodeAnchor> for Anchor {
-    fn from(value: NodeAnchor) -> Self {
-        match value {
-            NodeAnchor::TopLeft => Anchor::TopLeft,
-            NodeAnchor::TopCenter => Anchor::TopCenter,
-            NodeAnchor::TopRight => Anchor::TopRight,
-            NodeAnchor::CenterLeft => Anchor::CenterLeft,
-            NodeAnchor::Center => Anchor::Center,
-            NodeAnchor::CenterRight => Anchor::CenterRight,
-            NodeAnchor::BottomLeft => Anchor::BottomLeft,
-            NodeAnchor::BottomCenter => Anchor::BottomCenter,
-            NodeAnchor::BottomRight => Anchor::BottomRight,
-        }
-    }
-}
-
-impl NodeAnchor {
-    pub fn calculate_origin(&self, position: Vec2, size: Vec2) -> Vec2 {
-        let half_size = size / 2.0;
-
-        match self {
-            Self::TopLeft => position,
-            Self::TopCenter => position - Vec2::X * half_size,
-            Self::TopRight => position - Vec2::X * size,
-            Self::CenterLeft => position - Vec2::Y * half_size,
-            Self::Center => position - half_size,
-            Self::CenterRight => position - vec2(size.x, half_size.y),
-            Self::BottomLeft => position - Vec2::Y * size,
-            Self::BottomCenter => position - vec2(half_size.x, size.y),
-            Self::BottomRight => position - size,
-        }
-    }
-
-    pub fn calculate_center(&self, position: Vec2, size: Vec2) -> Vec2 {
-        let half_size = size / 2.0;
-
-        match self {
-            Self::TopLeft => position + half_size,
-            Self::TopCenter => position + Vec2::Y * half_size,
-            Self::TopRight => position + vec2(-half_size.x, half_size.y),
-            Self::CenterLeft => position + Vec2::X * half_size,
-            Self::Center => position,
-            Self::CenterRight => position - Vec2::X * half_size,
-            Self::BottomLeft => position + vec2(half_size.x, -half_size.y),
-            Self::BottomCenter => position - Vec2::Y * half_size,
-            Self::BottomRight => position - half_size,
-        }
-    }
+    pub(crate) attributes: Vec<Box<dyn LayoutAttribute>>,
 }
 
 /// First-class node data, guaranteed to be supported by yabuil
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, Default)]
 #[serde(tag = "node_kind", content = "node_data")]
 pub enum LayoutNodeData {
     /// This node should be treated like a blank slate
     ///
     /// Entities for `Null` nodes are spawned with exclusively node metadata and a [`TransformBundle`](bevy::prelude::TransformBundle)
     /// and [`VisibilityBundle`](bevy::prelude::VisibilityBundle).
+    #[default]
     Null,
 
     /// This node should be treated like an image
     ///
     /// Entities for `Image` nodes are spawned with a [`SpriteBundle`](bevy::prelude::SpriteBundle)
     Image {
-        path: PathBuf,
+        path: Option<PathBuf>,
+        #[serde(default)]
+        tint: Option<[f32; 4]>,
         #[serde(skip)]
         handle: Handle<Image>,
     },
@@ -219,7 +158,7 @@ pub enum LayoutNodeData {
     },
 }
 
-pub(crate) struct LayoutLoader(pub(crate) Arc<RwLock<AttributeRegistryInner>>);
+pub(crate) struct LayoutLoader(pub(crate) Arc<RwLock<LayoutRegistryInner>>);
 
 #[derive(Error, Debug)]
 pub enum LayoutError {
@@ -257,7 +196,11 @@ impl AssetLoader for LayoutLoader {
             for node in layout.nodes.iter_mut() {
                 match &mut node.inner {
                     LayoutNodeData::Null => {}
-                    LayoutNodeData::Image { handle, path } => *handle = context.load(path.clone()),
+                    LayoutNodeData::Image { handle, path, .. } => {
+                        if let Some(path) = path.as_ref() {
+                            *handle = context.load(path.clone());
+                        }
+                    }
                     LayoutNodeData::Text { handle, font, .. } => {
                         if let Some(font) = font.as_ref() {
                             *handle = context.load(font.clone())
@@ -268,6 +211,15 @@ impl AssetLoader for LayoutLoader {
 
                 for attribute in node.attributes.iter_mut() {
                     attribute.initialize_dependencies(&mut context);
+                }
+            }
+
+            let animations = Arc::get_mut(&mut layout.animations.0)
+                .expect("There should only be one reference to the animation map during loading");
+
+            for animation in animations.values_mut() {
+                for node_anim in animation.iter_mut() {
+                    node_anim.target.initialize_dependencies(&mut context);
                 }
             }
 

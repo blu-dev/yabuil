@@ -8,8 +8,10 @@ use bevy::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    components::RootNode, views::NodeWorldViewMut, ActiveLayout, ComputedLayoutNodeMetadata,
-    LayoutAttribute, LayoutId,
+    components::RootNode,
+    node::{ComputedBoundingBox, LayoutInfo},
+    views::NodeWorldViewMut,
+    ActiveLayout, LayoutAttribute, LayoutId,
 };
 
 const fn default_true() -> bool {
@@ -272,7 +274,10 @@ impl LayoutAttribute for InputDetection {
     fn apply(&self, world: &mut NodeWorldViewMut) {
         let world = world.as_entity_world_mut();
 
-        world.insert(LayoutNodeInputDetection::default());
+        world.insert((
+            LayoutNodeInputDetection::default(),
+            ComputedBoundingBox::default(),
+        ));
 
         let mut cameras = LayoutCursors::default();
 
@@ -291,7 +296,11 @@ pub(crate) struct UpdateInputDetectionState<'w, 's> {
     roots: Query<
         'w,
         's,
-        (&'static Parent, &'static GlobalTransform),
+        (
+            &'static Parent,
+            &'static GlobalTransform,
+            &'static LayoutInfo,
+        ),
         (With<RootNode>, With<ActiveLayout>),
     >,
     cameras: Query<'w, 's, &'static Camera>,
@@ -305,7 +314,7 @@ impl<'w, 's> UpdateInputDetectionState<'w, 's> {
             return *cursor;
         }
 
-        let Ok((layout, _)) = self.roots.get(layout_id) else {
+        let Ok((layout, _, _)) = self.roots.get(layout_id) else {
             log::warn!("Failed to get layout with id {layout_id:?}");
             return None;
         };
@@ -350,14 +359,6 @@ impl<'w, 's> UpdateInputDetectionState<'w, 's> {
 
         None
     }
-
-    fn get_scale_for_layout(&self, layout: LayoutId) -> Option<Vec2> {
-        let layout_id = layout.0;
-        self.roots
-            .get(layout_id)
-            .ok()
-            .map(|(_, transform)| transform.compute_transform().scale.xy())
-    }
 }
 
 pub(crate) fn update_input_detection_nodes(
@@ -367,8 +368,9 @@ pub(crate) fn update_input_detection_nodes(
     mut nodes: Query<(
         Entity,
         &mut LayoutNodeInputDetection,
+        &ComputedBoundingBox,
+        &LayoutId,
         &LayoutCursors,
-        &ComputedLayoutNodeMetadata,
     )>,
     custom_cursors: Query<&LayoutCursorPosition>,
 ) {
@@ -382,11 +384,11 @@ pub(crate) fn update_input_detection_nodes(
     let just_right = input.just_pressed(MouseButton::Right);
     let just_middle = input.just_pressed(MouseButton::Middle);
 
-    for (entity, mut detection, cursors, meta) in nodes.iter_mut() {
+    for (entity, mut detection, bounding_box, layout_id, cursors) in nodes.iter_mut() {
         for cursor in cursors.iter() {
             let pos = match cursor {
                 Cursor::CameraWindow => {
-                    let Some(pos) = state.get_camera_cursors_for_layout(meta.layout_id()) else {
+                    let Some(pos) = state.get_camera_cursors_for_layout(*layout_id) else {
                         continue;
                     };
                     pos
@@ -399,14 +401,6 @@ pub(crate) fn update_input_detection_nodes(
                     cursor.position
                 }
             };
-
-            let Some(scale) = state.get_scale_for_layout(meta.layout_id()) else {
-                continue;
-            };
-
-            let mut bounding_box = meta.bounding_box();
-            bounding_box.min *= scale;
-            bounding_box.max *= scale;
 
             let is_in = bounding_box.contains(pos);
 

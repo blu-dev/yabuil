@@ -26,7 +26,7 @@
         },
         {
             "id": "button_text",
-            "position": [10.0, 10.0],
+            "position": [30.0, 10.0],
             "size": [500.0, 60.0],
             "anchor": "TopLeft",
             "node_kind": "Text",
@@ -50,12 +50,32 @@
                 }
             },
             {
+                "id": "button_image",
+                "time_ms": 100.0,
+                "target": {
+                    "ImageColor": {
+                        "start": [0.5, 0.5, 0.5, 1.0],
+                        "end": [1.0, 1.0, 1.0, 1.0]
+                    }
+                }
+            },
+            {
                 "id": "button_text",
                 "time_ms": 100.0,
                 "target": {
                     "Position": {
-                        "start": [10.0, 10.0],
+                        "start": [30.0, 10.0],
                         "end": [110.0, 10.0]
+                    }
+                }
+            },
+            {
+                "id": "button_text",
+                "time_ms": 100.0,
+                "target": {
+                    "TextColor": {
+                        "start": [0.5, 0.5, 0.5, 1.0],
+                        "end": [1.0, 1.0, 1.0, 1.0]
                     }
                 }
             },
@@ -82,12 +102,32 @@
                 }
             },
             {
+                "id": "button_image",
+                "time_ms": 100.0,
+                "target": {
+                    "ImageColor": {
+                        "start": [1.0, 1.0, 1.0, 1.0],
+                        "end": [0.5, 0.5, 0.5, 1.0]
+                    }
+                }
+            },
+            {
                 "id": "button_text",
                 "time_ms": 100.0,
                 "target": {
                     "Position": {
                         "start": [110.0, 10.0],
-                        "end": [10.0, 10.0]
+                        "end": [30.0, 10.0]
+                    }
+                }
+            },
+            {
+                "id": "button_text",
+                "time_ms": 100.0,
+                "target": {
+                    "TextColor": {
+                        "start": [1.0, 1.0, 1.0, 1.0],
+                        "end": [0.5, 0.5, 0.5, 1.0]
                     }
                 }
             },
