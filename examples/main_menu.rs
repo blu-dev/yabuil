@@ -5,7 +5,6 @@ use bevy::{
     },
     prelude::*,
 };
-use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use serde::{Deserialize, Serialize};
 use yabuil::{
     asset::Layout,
@@ -94,18 +93,6 @@ pub enum MainMenuButton {
     Exit,
 }
 
-fn animate_menu_button(button: &mut NodeWorldViewMut, on: bool) {
-    let animation = if on { "select" } else { "unselect" };
-
-    button.parent_scope(|parent| {
-        let mut parent = parent.unwrap();
-        parent
-            .as_layout_node_mut()
-            .unwrap()
-            .play_animation(animation);
-    });
-}
-
 impl LayoutAttribute for MainMenuButton {
     fn apply(&self, world: &mut NodeWorldViewMut) {
         let name = match self {
@@ -134,6 +121,18 @@ impl LayoutAttribute for MainMenuButton {
 
         world.as_entity_world_mut().insert(*self);
     }
+}
+
+fn animate_menu_button(button: &mut NodeWorldViewMut, on: bool) {
+    let animation = if on { "select" } else { "unselect" };
+
+    button.parent_scope(|parent| {
+        let mut parent = parent.unwrap();
+        parent
+            .as_layout_node_mut()
+            .unwrap()
+            .play_animation(animation);
+    });
 }
 
 fn startup_system(mut commands: Commands, asset_server: Res<AssetServer>) {
@@ -178,11 +177,7 @@ fn startup_system(mut commands: Commands, asset_server: Res<AssetServer>) {
 
 pub fn main() {
     App::new()
-        .add_plugins((
-            DefaultPlugins,
-            LayoutPlugin,
-            WorldInspectorPlugin::default(),
-        ))
+        .add_plugins((DefaultPlugins, LayoutPlugin))
         .register_layout_attribute::<MainMenuButton>("MainMenuButton")
         .register_layout_attribute::<ControllerCursor>("ControllerCursor")
         .add_systems(Startup, startup_system)

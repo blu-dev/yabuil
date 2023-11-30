@@ -8,7 +8,6 @@ use bevy::{
     render::texture::Image,
     DefaultPlugins,
 };
-use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use serde::{Deserialize, Serialize};
 use yabuil::{
     asset::Layout, views::NodeWorldViewMut, ActiveLayout, LayoutApp, LayoutAttribute, LayoutBundle,
@@ -49,11 +48,7 @@ fn startup_system(mut commands: Commands, asset_server: Res<AssetServer>) {
 
 pub fn main() {
     App::new()
-        .add_plugins((
-            DefaultPlugins,
-            LayoutPlugin,
-            WorldInspectorPlugin::default(),
-        ))
+        .add_plugins((DefaultPlugins, LayoutPlugin))
         .register_layout_attribute::<CustomImage>("CustomImage")
         .add_systems(Startup, startup_system)
         .add_systems(Update, bevy::window::close_on_esc)

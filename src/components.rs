@@ -138,8 +138,9 @@ fn spawn_layout_recursive(
                     NodeKind::Null,
                 ));
             }
-            LayoutNodeData::Image { handle, tint, .. } => {
-                let color = tint
+            LayoutNodeData::Image(data) => {
+                let color = data
+                    .tint
                     .map(|[r, g, b, a]| Color::rgba(r, g, b, a))
                     .unwrap_or(Color::WHITE);
 
@@ -150,21 +151,14 @@ fn spawn_layout_recursive(
                             custom_size: Some(node.size),
                             ..default()
                         },
-                        texture: handle.clone(),
+                        texture: data.handle.clone(),
                         ..default()
                     },
                     NodeKind::Image,
                 ));
             }
-            LayoutNodeData::Text {
-                text,
-                handle,
-                size,
-                color,
-                alignment,
-                ..
-            } => {
-                let anchor = match alignment {
+            LayoutNodeData::Text(data) => {
+                let anchor = match data.alignment {
                     TextAlignment::Left => bevy::sprite::Anchor::CenterLeft,
                     TextAlignment::Center => bevy::sprite::Anchor::Center,
                     TextAlignment::Right => bevy::sprite::Anchor::CenterRight,
@@ -173,11 +167,16 @@ fn spawn_layout_recursive(
                 child.insert((
                     Text2dBundle {
                         text: Text::from_section(
-                            text.clone(),
+                            data.text.clone(),
                             TextStyle {
-                                font: handle.clone(),
-                                font_size: *size,
-                                color: Color::rgba(color[0], color[1], color[2], color[3]),
+                                font: data.handle.clone(),
+                                font_size: data.size,
+                                color: Color::rgba(
+                                    data.color[0],
+                                    data.color[1],
+                                    data.color[2],
+                                    data.color[3],
+                                ),
                             },
                         ),
                         text_anchor: anchor,

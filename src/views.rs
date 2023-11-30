@@ -1,11 +1,12 @@
 use std::ops::DerefMut;
 
-use bevy::prelude::*;
+use bevy::{prelude::*, sprite::Anchor, text::Text2dBounds};
 
 use crate::{
     animation::{AnimationPlayerState, Animations},
+    asset::TextNodeData,
     components::NodeKind,
-    node::Node,
+    node::{LayoutInfo, Node, ZIndex},
     LayoutId, LayoutNodeId,
 };
 
@@ -310,6 +311,10 @@ impl<'a> NodeWorldViewMut<'a> {
         (self.kind() == NodeKind::Layout).then(|| LayoutNodeViewMut(self.as_entity_mut()))
     }
 
+    pub fn layout_builder<'b>(&'b mut self) -> Option<LayoutBuilder<'a, 'b>> {
+        (self.kind() == NodeKind::Layout).then(|| LayoutBuilder(&mut self.0))
+    }
+
     pub fn parent<'b>(&'b self) -> Option<NodeWorldView<'b>> {
         let parent = self.as_entity().get::<Parent>()?;
         NodeWorldView::new(parent.get(), self.world())
@@ -590,34 +595,138 @@ impl<'a> LayoutNodeViewMut<'a> {
     }
 }
 
-pub struct LayoutNodeWorldViewMut<'a>(EntityWorldMut<'a>);
+/// Code interface for building new layouts without using assets
+///
+/// This can also be used in combination with asset-based layouts,
+/// for example if you need to spawn a variable number of nodes all using
+/// the same sublayout
+pub struct LayoutBuilder<'a: 'b, 'b>(&'b mut EntityWorldMut<'a>);
 
-impl<'a> LayoutNodeWorldViewMut<'a> {
-    pub fn has_animation(&self, animation: impl AsRef<str>) -> bool {
-        self.0
-            .get::<Animations>()
-            .unwrap()
-            .0
-            .contains_key(animation.as_ref())
+impl<'a: 'b, 'b> LayoutBuilder<'a, 'b> {
+    fn spawn_node(
+        &mut self,
+        name: impl AsRef<str>,
+        node: Node,
+        f: impl FnOnce(EntityWorldMut<'_>),
+    ) {
+        let id = self.0.get::<LayoutNodeId>().unwrap().join(name.as_ref());
+        let layout_id = *self.0.get::<LayoutId>().unwrap();
+        // TODO: figure this out
+        let z_index = ZIndex::default();
+
+        let id =
+            self.0.world_scope(|world| {
+                let entity = world.spawn((node, id, layout_id, z_index));
+                let id = entity.id();
+                f(entity);
+                id
+            });
+        self.0.add_child(id);
     }
 
-    pub fn play_animation(&mut self, animation: impl AsRef<str>) {
-        *self.0.get_mut::<AnimationPlayerState>().unwrap() = AnimationPlayerState::Playing {
-            animation: animation.as_ref().to_string(),
-            time_elapsed_ms: 0.0,
+    pub fn add_null_node(
+        &mut self,
+        name: impl AsRef<str>,
+        node: Node,
+        f: impl FnOnce(NodeWorldViewMut<'_>),
+    ) {
+        self.spawn_node(name, node, |mut world| {
+            world.insert((
+                NodeKind::Null,
+                TransformBundle::default(),
+                VisibilityBundle::default(),
+            ));
+            f(NodeWorldViewMut::new(world).unwrap());
+        });
+    }
+
+    pub fn add_image_node(
+        &mut self,
+        name: impl AsRef<str>,
+        node: Node,
+        image: Handle<Image>,
+        f: impl FnOnce(NodeWorldViewMut<'_>),
+    ) {
+        let size = node.size;
+        self.spawn_node(name, node, |mut world| {
+            world.insert((
+                NodeKind::Image,
+                SpriteBundle {
+                    sprite: Sprite {
+                        custom_size: Some(size),
+                        ..default()
+                    },
+                    texture: image,
+                    ..default()
+                },
+            ));
+            f(NodeWorldViewMut::new(world).unwrap());
+        });
+    }
+
+    pub fn add_text_node(
+        &mut self,
+        name: impl AsRef<str>,
+        node: Node,
+        data: TextNodeData,
+        f: impl FnOnce(NodeWorldViewMut<'_>),
+    ) {
+        let size = node.size;
+        let anchor = match data.alignment {
+            TextAlignment::Left => Anchor::CenterLeft,
+            TextAlignment::Center => Anchor::Center,
+            TextAlignment::Right => Anchor::CenterRight,
         };
+        self.spawn_node(name, node, |mut world| {
+            world.insert((
+                Text2dBundle {
+                    text: Text::from_section(
+                        data.text.clone(),
+                        TextStyle {
+                            font: data.handle.clone(),
+                            font_size: data.size,
+                            color: Color::rgba(
+                                data.color[0],
+                                data.color[1],
+                                data.color[2],
+                                data.color[3],
+                            ),
+                        },
+                    ),
+                    text_2d_bounds: Text2dBounds { size },
+                    text_anchor: anchor,
+                    ..default()
+                },
+                NodeKind::Text,
+            ));
+            f(NodeWorldViewMut::new(world).unwrap());
+        });
     }
 
-    // pub fn add_child<R>(&mut self, node: LayoutNode, f: impl FnOnce(EntityWorldMut<'_>) -> R) -> R {
-    //     let md = self.0.get::<LayoutNodeMetadata>().unwrap();
-    //     let metadata = LayoutNodeMetadata::new(
-    //         md.layout_id(),
-    //         Some(md.id().qualified().to_path_buf()),
-    //         &node,
-    //     );
+    pub fn add_layout_node(
+        &mut self,
+        name: impl AsRef<str>,
+        node: Node,
+        f: impl FnOnce(LayoutBuilder<'_, '_>),
+    ) {
+        let self_node = self.0.get::<Node>().unwrap();
+        let layout_info =
+            LayoutInfo {
+                resolution_scale: self_node.size / node.size,
+                canvas_size: node.size,
+            };
 
-    //     let computed_metadata = ComputedLayoutNodeMetadata {};
+        self.spawn_node(name, node, |mut world| {
+            world.insert((
+                TransformBundle::default(),
+                VisibilityBundle::default(),
+                Animations::default(),
+                AnimationPlayerState::NotPlaying,
+                NodeKind::Layout,
+                layout_info,
+            ));
 
-    //     self.0.world_scope(|world| {});
-    // }
+            f(LayoutBuilder(&mut world));
+        });
+    }
 }

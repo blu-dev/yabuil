@@ -52,8 +52,8 @@ impl VisitAssetDependencies for Layout {
         for node in self.nodes.iter() {
             match &node.inner {
                 LayoutNodeData::Null => {}
-                LayoutNodeData::Image { handle, .. } => visit(handle.id().untyped()),
-                LayoutNodeData::Text { handle, .. } => visit(handle.id().untyped()),
+                LayoutNodeData::Image(data) => visit(data.handle.id().untyped()),
+                LayoutNodeData::Text(data) => visit(data.handle.id().untyped()),
                 LayoutNodeData::Layout { handle, .. } => visit(handle.id().untyped()),
             }
 
@@ -112,6 +112,28 @@ pub struct LayoutNode {
     pub(crate) attributes: Vec<Box<dyn LayoutAttribute>>,
 }
 
+#[derive(Serialize, Deserialize, Default)]
+pub struct ImageNodeData {
+    pub path: Option<PathBuf>,
+    #[serde(default)]
+    pub tint: Option<[f32; 4]>,
+    #[serde(skip)]
+    pub handle: Handle<Image>,
+}
+
+#[derive(Serialize, Deserialize, Default)]
+pub struct TextNodeData {
+    pub text: String,
+    pub size: f32,
+    pub color: [f32; 4],
+    #[serde(default)]
+    pub font: Option<PathBuf>,
+    #[serde(skip)]
+    pub handle: Handle<Font>,
+    #[serde(default)]
+    pub alignment: TextAlignment,
+}
+
 /// First-class node data, guaranteed to be supported by yabuil
 #[derive(Deserialize, Serialize, Default)]
 #[serde(tag = "node_kind", content = "node_data")]
@@ -126,28 +148,12 @@ pub enum LayoutNodeData {
     /// This node should be treated like an image
     ///
     /// Entities for `Image` nodes are spawned with a [`SpriteBundle`](bevy::prelude::SpriteBundle)
-    Image {
-        path: Option<PathBuf>,
-        #[serde(default)]
-        tint: Option<[f32; 4]>,
-        #[serde(skip)]
-        handle: Handle<Image>,
-    },
+    Image(ImageNodeData),
 
     /// This node contains a bounded text area
     ///
     /// The `size` field on this node is treated as a bounding area for a [`TextBundle`](bevy::prelude::TextBundle).
-    Text {
-        text: String,
-        size: f32,
-        color: [f32; 4],
-        #[serde(default)]
-        font: Option<PathBuf>,
-        #[serde(skip)]
-        handle: Handle<Font>,
-        #[serde(default)]
-        alignment: TextAlignment,
-    },
+    Text(TextNodeData),
 
     /// This node reuses another layout from another file
     Layout {
@@ -196,14 +202,14 @@ impl AssetLoader for LayoutLoader {
             for node in layout.nodes.iter_mut() {
                 match &mut node.inner {
                     LayoutNodeData::Null => {}
-                    LayoutNodeData::Image { handle, path, .. } => {
-                        if let Some(path) = path.as_ref() {
-                            *handle = context.load(path.clone());
+                    LayoutNodeData::Image(data) => {
+                        if let Some(path) = data.path.as_ref() {
+                            data.handle = context.load(path.clone());
                         }
                     }
-                    LayoutNodeData::Text { handle, font, .. } => {
-                        if let Some(font) = font.as_ref() {
-                            *handle = context.load(font.clone())
+                    LayoutNodeData::Text(data) => {
+                        if let Some(font) = data.font.as_ref() {
+                            data.handle = context.load(font.clone())
                         }
                     }
                     LayoutNodeData::Layout { handle, path } => *handle = context.load(path.clone()),
