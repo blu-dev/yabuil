@@ -2,7 +2,7 @@ use std::{hint::unreachable_unchecked, sync::Arc};
 
 use bevy::{ecs::query::WorldQuery, prelude::*, utils::HashMap};
 
-use crate::{views::NodeViewMut, LayoutAnimation};
+use crate::{views::NodeViewMut, LayoutAnimationTarget};
 use serde::{Deserialize, Serialize};
 
 #[derive(Default, Deserialize, Serialize)]
@@ -33,7 +33,7 @@ pub struct NodeAnimation {
     pub(crate) id: String,
     pub(crate) time_ms: f32,
     pub(crate) time_scale: TimeBezierCurve,
-    pub(crate) target: Box<dyn LayoutAnimation>,
+    pub(crate) target: Box<dyn LayoutAnimationTarget>,
 }
 
 #[derive(Clone, Component, Default)]
@@ -151,16 +151,13 @@ pub struct ImageColorAnimation(ColorAnimation);
 #[derive(Serialize, Deserialize)]
 pub struct TextColorAnimation(ColorAnimation);
 
-impl LayoutAnimation for PositionAnimation {
-    fn apply(&self, _layout: &mut crate::views::NodeWorldViewMut) {}
-
+impl LayoutAnimationTarget for PositionAnimation {
     fn interpolate(&self, node: &mut NodeViewMut, interpolation: f32) {
         node.node_mut().position = self.start * (1.0 - interpolation) + self.end * interpolation;
     }
 }
 
-impl LayoutAnimation for SizeAnimation {
-    fn apply(&self, _layout: &mut crate::views::NodeWorldViewMut) {}
+impl LayoutAnimationTarget for SizeAnimation {
     fn interpolate(&self, node: &mut NodeViewMut, interpolation: f32) {
         node.node_mut().size = self.start * (1.0 - interpolation) + self.end * interpolation;
     }
@@ -180,9 +177,7 @@ impl ColorAnimation {
     }
 }
 
-impl LayoutAnimation for ImageColorAnimation {
-    fn apply(&self, _layout: &mut crate::views::NodeWorldViewMut) {}
-
+impl LayoutAnimationTarget for ImageColorAnimation {
     fn interpolate(&self, node: &mut NodeViewMut, interpolation: f32) {
         node.as_image_node_mut().unwrap().update_sprite(|style| {
             style.color = self.0.interpolate(interpolation);
@@ -190,9 +185,7 @@ impl LayoutAnimation for ImageColorAnimation {
     }
 }
 
-impl LayoutAnimation for TextColorAnimation {
-    fn apply(&self, _layout: &mut crate::views::NodeWorldViewMut) {}
-
+impl LayoutAnimationTarget for TextColorAnimation {
     fn interpolate(&self, node: &mut NodeViewMut, interpolation: f32) {
         node.as_text_node_mut()
             .unwrap()

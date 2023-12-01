@@ -8,7 +8,7 @@ use serde::{
 
 use crate::{
     animation::{Animations, NodeAnimation, TimeBezierCurve},
-    LayoutAnimation, LayoutRegistryInner,
+    LayoutAnimationTarget, LayoutRegistryInner,
 };
 
 enum AnimationDataFieldId {
@@ -56,7 +56,7 @@ impl<'de> Deserialize<'de> for AnimationDataFieldId {
 struct TargetDeserializer<'de>(&'de LayoutRegistryInner);
 
 impl<'de> Visitor<'de> for TargetDeserializer<'de> {
-    type Value = Box<dyn LayoutAnimation>;
+    type Value = Box<dyn LayoutAnimationTarget>;
     fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
         formatter.write_str("registered layout animation")
     }
@@ -81,7 +81,7 @@ impl<'de> Visitor<'de> for TargetDeserializer<'de> {
 }
 
 impl<'de> DeserializeSeed<'de> for TargetDeserializer<'de> {
-    type Value = Box<dyn LayoutAnimation>;
+    type Value = Box<dyn LayoutAnimationTarget>;
 
     fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
     where
