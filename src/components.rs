@@ -14,7 +14,7 @@ use thiserror::Error;
 
 use crate::{
     animation::AnimationPlayerState,
-    asset::{Layout, LayoutNodeData},
+    asset::{Layout, LayoutNodeInner},
     node::{Anchor, LayoutInfo, ZIndex},
     views::NodeWorldViewMut,
 };
@@ -45,6 +45,7 @@ pub enum NodeKind {
     Image,
     Text,
     Layout,
+    Group,
 }
 
 #[derive(Component)]
@@ -112,114 +113,18 @@ fn spawn_layout_recursive(
     let mut nodes_to_init = vec![];
 
     for node in layout.nodes.iter() {
-        let layout_node = crate::node::Node {
-            anchor: node.anchor,
-            position: node.position,
-            size: node.size,
-            rotation: node.rotation,
-        };
-
-        let child = world.spawn((
-            layout_node,
-            parent_id.join(node.id.as_str()),
+        let child = spawn_node(
+            node,
+            world,
+            &parent_id,
             root_id,
-            z_index.fetch_inc(),
-        ));
+            z_index,
+            current_node,
+            assets,
+            layout,
+        )?;
 
-        let child = child.id();
-        world.entity_mut(current_node).add_child(child);
-        let mut child = world.entity_mut(child);
-
-        match &node.inner {
-            LayoutNodeData::Null => {
-                child.insert((
-                    TransformBundle::default(),
-                    VisibilityBundle::default(),
-                    NodeKind::Null,
-                ));
-            }
-            LayoutNodeData::Image(data) => {
-                let color = data
-                    .tint
-                    .map(|[r, g, b, a]| Color::rgba(r, g, b, a))
-                    .unwrap_or(Color::WHITE);
-
-                child.insert((
-                    SpriteBundle {
-                        sprite: Sprite {
-                            color,
-                            custom_size: Some(node.size),
-                            ..default()
-                        },
-                        texture: data.handle.clone(),
-                        ..default()
-                    },
-                    NodeKind::Image,
-                ));
-            }
-            LayoutNodeData::Text(data) => {
-                let anchor = match data.alignment {
-                    TextAlignment::Left => bevy::sprite::Anchor::CenterLeft,
-                    TextAlignment::Center => bevy::sprite::Anchor::Center,
-                    TextAlignment::Right => bevy::sprite::Anchor::CenterRight,
-                };
-
-                child.insert((
-                    Text2dBundle {
-                        text: Text::from_section(
-                            data.text.clone(),
-                            TextStyle {
-                                font: data.handle.clone(),
-                                font_size: data.size,
-                                color: Color::rgba(
-                                    data.color[0],
-                                    data.color[1],
-                                    data.color[2],
-                                    data.color[3],
-                                ),
-                            },
-                        ),
-                        text_anchor: anchor,
-                        ..default()
-                    },
-                    NodeKind::Text,
-                ));
-            }
-            LayoutNodeData::Layout { handle, .. } => {
-                let Some(child_layout) = assets.get(handle.id()) else {
-                    return Err(SpawnLayoutError::NotLoaded);
-                };
-
-                child.insert((
-                    TransformBundle::default(),
-                    VisibilityBundle::default(),
-                    child_layout.animations.clone(),
-                    AnimationPlayerState::NotPlaying,
-                    NodeKind::Layout,
-                    LayoutInfo {
-                        resolution_scale: layout.get_resolution().as_vec2()
-                            / child_layout.get_resolution().as_vec2(),
-                        canvas_size: child_layout.canvas_size.as_vec2(),
-                    },
-                ));
-
-                let current_node = child.id();
-
-                spawn_layout_recursive(
-                    world,
-                    assets,
-                    handle.id(),
-                    current_node,
-                    root_id,
-                    parent_id.join(node.id.as_str()),
-                    z_index,
-                )?;
-
-                child = world.entity_mut(current_node);
-            }
-        }
-
-        nodes_to_init.push(child.id());
+        nodes_to_init.push(child);
     }
 
     for (node, entity) in layout.nodes.iter().zip(nodes_to_init.into_iter()) {
@@ -231,6 +136,152 @@ fn spawn_layout_recursive(
     }
 
     Ok(())
+}
+
+fn spawn_node(
+    node: &crate::asset::LayoutNode,
+    world: &mut World,
+    parent_id: &LayoutNodeId,
+    root_id: LayoutId,
+    z_index: &mut ZIndex,
+    current_node: Entity,
+    assets: &Assets<Layout>,
+    layout: &Layout,
+) -> Result<Entity, SpawnLayoutError> {
+    let layout_node = crate::node::Node {
+        anchor: node.anchor,
+        position: node.position,
+        size: node.size,
+        rotation: node.rotation,
+    };
+    let child = world.spawn((
+        layout_node,
+        parent_id.join(node.id.as_str()),
+        root_id,
+        z_index.fetch_inc(),
+    ));
+    let child = child.id();
+    world.entity_mut(current_node).add_child(child);
+    let mut child = world.entity_mut(child);
+    match &node.inner {
+        LayoutNodeInner::Null => {
+            child.insert((
+                TransformBundle::default(),
+                VisibilityBundle::default(),
+                NodeKind::Null,
+            ));
+        }
+        LayoutNodeInner::Image(data) => {
+            let color = data
+                .tint
+                .map(|[r, g, b, a]| Color::rgba(r, g, b, a))
+                .unwrap_or(Color::WHITE);
+
+            child.insert((
+                SpriteBundle {
+                    sprite: Sprite {
+                        color,
+                        custom_size: Some(node.size),
+                        ..default()
+                    },
+                    texture: data.handle.clone(),
+                    ..default()
+                },
+                NodeKind::Image,
+            ));
+        }
+        LayoutNodeInner::Text(data) => {
+            let anchor = match data.alignment {
+                TextAlignment::Left => bevy::sprite::Anchor::CenterLeft,
+                TextAlignment::Center => bevy::sprite::Anchor::Center,
+                TextAlignment::Right => bevy::sprite::Anchor::CenterRight,
+            };
+
+            child.insert((
+                Text2dBundle {
+                    text: Text::from_section(
+                        data.text.clone(),
+                        TextStyle {
+                            font: data.handle.clone(),
+                            font_size: data.size,
+                            color: Color::rgba(
+                                data.color[0],
+                                data.color[1],
+                                data.color[2],
+                                data.color[3],
+                            ),
+                        },
+                    ),
+                    text_anchor: anchor,
+                    ..default()
+                },
+                NodeKind::Text,
+            ));
+        }
+        LayoutNodeInner::Layout(data) => {
+            let Some(child_layout) = assets.get(data.handle.id()) else {
+                return Err(SpawnLayoutError::NotLoaded);
+            };
+
+            child.insert((
+                TransformBundle::default(),
+                VisibilityBundle::default(),
+                child_layout.animations.clone(),
+                AnimationPlayerState::NotPlaying,
+                NodeKind::Layout,
+                LayoutInfo {
+                    resolution_scale: layout.get_resolution().as_vec2()
+                        / child_layout.get_resolution().as_vec2(),
+                    canvas_size: child_layout.canvas_size.as_vec2(),
+                },
+            ));
+
+            let current_node = child.id();
+
+            spawn_layout_recursive(
+                world,
+                assets,
+                data.handle.id(),
+                current_node,
+                root_id,
+                parent_id.join(node.id.as_str()),
+                z_index,
+            )?;
+
+            child = world.entity_mut(current_node);
+        }
+        LayoutNodeInner::Group(group) => {
+            child.insert((
+                TransformBundle::default(),
+                VisibilityBundle::default(),
+                NodeKind::Group,
+                LayoutInfo {
+                    resolution_scale: Vec2::ONE,
+                    canvas_size: node.size,
+                },
+            ));
+
+            let current_node = child.id();
+
+            let parent_id = parent_id.join(node.id.as_str());
+
+            for node in group.iter() {
+                spawn_node(
+                    node,
+                    world,
+                    &parent_id,
+                    root_id,
+                    z_index,
+                    current_node,
+                    assets,
+                    layout,
+                )?;
+            }
+
+            child = world.entity_mut(current_node);
+        }
+    }
+    Ok(child.id())
 }
 
 pub(crate) fn spawn_layout_system(
@@ -359,49 +410,48 @@ pub(crate) fn update_ui_layout_transform(
             continue;
         };
 
-        let render_target_size =
-            if let Some(viewport) = parent.viewport.as_ref() {
-                viewport.physical_size
-            } else {
-                match &parent.target {
-                    RenderTarget::Window(win_ref) => {
-                        let window = match win_ref {
-                            WindowRef::Primary => {
-                                let Ok(window) = primary_window.get_single() else {
-                                    log::warn!("Failed to get primary window");
-                                    continue;
-                                };
-                                window
-                            }
-                            WindowRef::Entity(entity) => {
-                                let Ok(window) = windows.get(*entity) else {
-                                    log::warn!("Failed to get window {entity:?}");
-                                    continue;
-                                };
-                                window
-                            }
-                        };
+        let render_target_size = if let Some(viewport) = parent.viewport.as_ref() {
+            viewport.physical_size
+        } else {
+            match &parent.target {
+                RenderTarget::Window(win_ref) => {
+                    let window = match win_ref {
+                        WindowRef::Primary => {
+                            let Ok(window) = primary_window.get_single() else {
+                                log::warn!("Failed to get primary window");
+                                continue;
+                            };
+                            window
+                        }
+                        WindowRef::Entity(entity) => {
+                            let Ok(window) = windows.get(*entity) else {
+                                log::warn!("Failed to get window {entity:?}");
+                                continue;
+                            };
+                            window
+                        }
+                    };
 
-                        Vec2::new(window.width(), window.height()).as_uvec2()
-                    }
-                    RenderTarget::Image(image) => {
-                        if let Some(image) = images.get(image.id()) {
-                            image.size()
-                        } else {
-                            log::warn!("Failed to get render target image");
-                            continue;
-                        }
-                    }
-                    RenderTarget::TextureView(handle) => {
-                        if let Some(view) = texture_views.get(handle) {
-                            view.size
-                        } else {
-                            log::warn!("Failed to get manual texture view");
-                            continue;
-                        }
+                    Vec2::new(window.width(), window.height()).as_uvec2()
+                }
+                RenderTarget::Image(image) => {
+                    if let Some(image) = images.get(image.id()) {
+                        image.size()
+                    } else {
+                        log::warn!("Failed to get render target image");
+                        continue;
                     }
                 }
-            };
+                RenderTarget::TextureView(handle) => {
+                    if let Some(view) = texture_views.get(handle) {
+                        view.size
+                    } else {
+                        log::warn!("Failed to get manual texture view");
+                        continue;
+                    }
+                }
+            }
+        };
 
         let scale = render_target_size.as_vec2() / node.canvas_size.as_vec2();
         transform.scale = scale.extend(1.0);

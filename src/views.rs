@@ -1,4 +1,4 @@
-use std::ops::DerefMut;
+use std::{ops::DerefMut, path::Path};
 
 use bevy::{prelude::*, sprite::Anchor, text::Text2dBounds};
 
@@ -399,29 +399,40 @@ impl<'a> NodeWorldViewMut<'a> {
 
     pub fn child_scope<R>(
         &mut self,
-        id: impl AsRef<str>,
+        id: impl AsRef<Path>,
         f: impl FnOnce(Option<NodeWorldViewMut<'_>>) -> R,
     ) -> R {
-        let Some(children) = self.as_entity().get::<Children>() else {
-            return f(None);
-        };
-
         let id = id.as_ref();
 
-        let child = children.iter().copied().find(|entity| {
-            let Some(child) = NodeView::new(self.world().entity(*entity)) else {
-                return false;
+        let mut entity = self.as_entity().id();
+        let world = self.world();
+
+        for id in id.components() {
+            let entity_ref = world.entity(entity);
+
+            let Some(children) = entity_ref.get::<Children>() else {
+                return f(None);
             };
 
-            child.id().name() == id
-        });
+            let id = id.as_os_str().to_str().unwrap();
 
-        if let Some(child) = child {
-            self.as_entity_world_mut()
-                .world_scope(|world| f(NodeWorldViewMut::new(world.entity_mut(child))))
-        } else {
-            f(None)
+            let child = children.iter().copied().find(|entity| {
+                let Some(child) = NodeView::new(self.world().entity(*entity)) else {
+                    return false;
+                };
+
+                child.id().name() == id
+            });
+
+            let Some(child) = child else {
+                return f(None);
+            };
+
+            entity = child;
         }
+
+        self.as_entity_world_mut()
+            .world_scope(|world| f(NodeWorldViewMut::new(world.entity_mut(entity))))
     }
 }
 
@@ -614,13 +625,12 @@ impl<'a: 'b, 'b> LayoutBuilder<'a, 'b> {
         // TODO: figure this out
         let z_index = ZIndex::default();
 
-        let id =
-            self.0.world_scope(|world| {
-                let entity = world.spawn((node, id, layout_id, z_index));
-                let id = entity.id();
-                f(entity);
-                id
-            });
+        let id = self.0.world_scope(|world| {
+            let entity = world.spawn((node, id, layout_id, z_index));
+            let id = entity.id();
+            f(entity);
+            id
+        });
         self.0.add_child(id);
     }
 
@@ -710,11 +720,10 @@ impl<'a: 'b, 'b> LayoutBuilder<'a, 'b> {
         f: impl FnOnce(LayoutBuilder<'_, '_>),
     ) {
         let self_node = self.0.get::<Node>().unwrap();
-        let layout_info =
-            LayoutInfo {
-                resolution_scale: self_node.size / node.size,
-                canvas_size: node.size,
-            };
+        let layout_info = LayoutInfo {
+            resolution_scale: self_node.size / node.size,
+            canvas_size: node.size,
+        };
 
         self.spawn_node(name, node, |mut world| {
             world.insert((

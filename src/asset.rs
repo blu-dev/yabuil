@@ -13,8 +13,8 @@ use bevy::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    animation::Animations, node::Anchor, LayoutAttribute, LayoutRegistryInner,
-    RestrictedLoadContext,
+    animation::Animations, node::Anchor, LayoutAnimationTarget, LayoutAttribute,
+    LayoutRegistryInner, RestrictedLoadContext,
 };
 use thiserror::Error;
 
@@ -47,19 +47,28 @@ pub struct Layout {
 
 impl Asset for Layout {}
 
+fn visit_node_dependencies(node: &LayoutNode, visit: &mut impl FnMut(bevy::asset::UntypedAssetId)) {
+    match &node.inner {
+        LayoutNodeInner::Null => {}
+        LayoutNodeInner::Image(data) => visit(data.handle.id().untyped()),
+        LayoutNodeInner::Text(data) => visit(data.handle.id().untyped()),
+        LayoutNodeInner::Layout(data) => visit(data.handle.id().untyped()),
+        LayoutNodeInner::Group(nodes) => {
+            for node in nodes.iter() {
+                visit_node_dependencies(node, visit)
+            }
+        }
+    }
+
+    for attribute in node.attributes.iter() {
+        attribute.visit_dependencies(visit);
+    }
+}
+
 impl VisitAssetDependencies for Layout {
     fn visit_dependencies(&self, visit: &mut impl FnMut(bevy::asset::UntypedAssetId)) {
         for node in self.nodes.iter() {
-            match &node.inner {
-                LayoutNodeData::Null => {}
-                LayoutNodeData::Image(data) => visit(data.handle.id().untyped()),
-                LayoutNodeData::Text(data) => visit(data.handle.id().untyped()),
-                LayoutNodeData::Layout { handle, .. } => visit(handle.id().untyped()),
-            }
-
-            for attribute in node.attributes.iter() {
-                attribute.visit_dependencies(visit);
-            }
+            visit_node_dependencies(node, visit);
         }
 
         for node_anim in self.animations.0.values().flat_map(|anim| anim.iter()) {
@@ -106,13 +115,13 @@ pub struct LayoutNode {
     /// Built-in supported node data for this node.
     ///
     /// These can be things like images, text, etc.
-    pub inner: LayoutNodeData,
+    pub inner: LayoutNodeInner,
 
     /// User-space attributes for each node
     pub(crate) attributes: Vec<Box<dyn LayoutAttribute>>,
 }
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct ImageNodeData {
     pub path: Option<PathBuf>,
     #[serde(default)]
@@ -121,7 +130,7 @@ pub struct ImageNodeData {
     pub handle: Handle<Image>,
 }
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct TextNodeData {
     pub text: String,
     pub size: f32,
@@ -134,10 +143,16 @@ pub struct TextNodeData {
     pub alignment: TextAlignment,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LayoutNodeData {
+    pub path: PathBuf,
+    #[serde(skip)]
+    pub handle: Handle<Layout>,
+}
+
 /// First-class node data, guaranteed to be supported by yabuil
-#[derive(Deserialize, Serialize, Default)]
-#[serde(tag = "node_kind", content = "node_data")]
-pub enum LayoutNodeData {
+#[derive(Default)]
+pub enum LayoutNodeInner {
     /// This node should be treated like a blank slate
     ///
     /// Entities for `Null` nodes are spawned with exclusively node metadata and a [`TransformBundle`](bevy::prelude::TransformBundle)
@@ -156,12 +171,12 @@ pub enum LayoutNodeData {
     Text(TextNodeData),
 
     /// This node reuses another layout from another file
-    Layout {
-        path: PathBuf,
+    Layout(LayoutNodeData),
 
-        #[serde(skip)]
-        handle: Handle<Layout>,
-    },
+    /// This is an inlined group of other nodes
+    ///
+    /// This should primarily be used to make animation easier
+    Group(Vec<LayoutNode>),
 }
 
 pub(crate) struct LayoutLoader(pub(crate) Arc<RwLock<LayoutRegistryInner>>);
@@ -200,24 +215,7 @@ impl AssetLoader for LayoutLoader {
             let mut context = RestrictedLoadContext { load_context };
 
             for node in layout.nodes.iter_mut() {
-                match &mut node.inner {
-                    LayoutNodeData::Null => {}
-                    LayoutNodeData::Image(data) => {
-                        if let Some(path) = data.path.as_ref() {
-                            data.handle = context.load(path.clone());
-                        }
-                    }
-                    LayoutNodeData::Text(data) => {
-                        if let Some(font) = data.font.as_ref() {
-                            data.handle = context.load(font.clone())
-                        }
-                    }
-                    LayoutNodeData::Layout { handle, path } => *handle = context.load(path.clone()),
-                }
-
-                for attribute in node.attributes.iter_mut() {
-                    attribute.initialize_dependencies(&mut context);
-                }
+                initialize_node(node, &mut context);
             }
 
             let animations = Arc::get_mut(&mut layout.animations.0)
@@ -232,4 +230,44 @@ impl AssetLoader for LayoutLoader {
             Ok(layout)
         })
     }
+}
+
+fn initialize_node(node: &mut LayoutNode, context: &mut RestrictedLoadContext<'_, '_>) {
+    match &mut node.inner {
+        LayoutNodeInner::Null => {}
+        LayoutNodeInner::Image(data) => {
+            if let Some(path) = data.path.as_ref() {
+                data.handle = context.load(path.clone());
+            }
+        }
+        LayoutNodeInner::Text(data) => {
+            if let Some(font) = data.font.as_ref() {
+                data.handle = context.load(font.clone())
+            }
+        }
+        LayoutNodeInner::Layout(data) => data.handle = context.load(data.path.clone()),
+        LayoutNodeInner::Group(group) => {
+            for node in group.iter_mut() {
+                initialize_node(node, context);
+            }
+        }
+    }
+
+    for attribute in node.attributes.iter_mut() {
+        attribute.initialize_dependencies(context);
+    }
+}
+
+#[derive(Debug)]
+pub struct UnregisteredData {
+    pub name: String,
+    pub value: serde_json::Value,
+}
+
+impl LayoutAttribute for UnregisteredData {
+    fn apply(&self, _: &mut crate::views::NodeWorldViewMut) {}
+}
+
+impl LayoutAnimationTarget for UnregisteredData {
+    fn interpolate(&self, _: &mut crate::views::NodeViewMut, _: f32) {}
 }

@@ -41,10 +41,22 @@ pub(crate) struct RegisteredAnimationData {
 /// Internal registry of layout animations/attributes
 ///
 /// This is internal to yabuil, and external users should rely on [`LayoutRegistry`]
-#[derive(Default)]
 pub(crate) struct LayoutRegistryInner {
+    pub(crate) ignore_unregistered_attributes: bool,
+    pub(crate) ignore_unregistered_animations: bool,
     pub(crate) attributes: HashMap<String, RegisteredAttributeData>,
     pub(crate) animations: HashMap<String, RegisteredAnimationData>,
+}
+
+impl LayoutRegistryInner {
+    pub fn new(ignore_attributes: bool, ignore_animations: bool) -> Self {
+        Self {
+            ignore_unregistered_animations: ignore_animations,
+            ignore_unregistered_attributes: ignore_attributes,
+            animations: Default::default(),
+            attributes: Default::default(),
+        }
+    }
 }
 
 /// Registry of layout attributes and animations
@@ -55,9 +67,20 @@ pub(crate) struct LayoutRegistryInner {
 ///
 /// If an attribute or an animation is not registered with this registry, layout assets will fail to deserialize
 /// and errors will show up in the bevy asset logs as opposed to this crate, so make sure to keep an eye out.
-#[derive(Default, Resource)]
+#[derive(Resource)]
 pub struct LayoutRegistry {
     inner: Arc<RwLock<LayoutRegistryInner>>,
+}
+
+impl LayoutRegistry {
+    pub(crate) fn new(ignore_attributes: bool, ignore_animations: bool) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(LayoutRegistryInner::new(
+                ignore_attributes,
+                ignore_animations,
+            ))),
+        }
+    }
 }
 
 impl LayoutRegistry {
@@ -150,11 +173,18 @@ pub enum LayoutSystems {
 }
 
 /// Plugin to add to an [`App`] that enables support for yabuil layouts
-pub struct LayoutPlugin;
+#[derive(Default)]
+pub struct LayoutPlugin {
+    pub ignore_unregistered_attributes: bool,
+    pub ignore_unregistered_animations: bool,
+}
 
 impl Plugin for LayoutPlugin {
     fn build(&self, app: &mut App) {
-        let registry = LayoutRegistry::default();
+        let registry = LayoutRegistry::new(
+            self.ignore_unregistered_attributes,
+            self.ignore_unregistered_animations,
+        );
 
         registry.register_attribute::<InputDetection>("InputDetection");
         registry.register_animation::<PositionAnimation>("Position");

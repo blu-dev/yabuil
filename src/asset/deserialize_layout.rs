@@ -3,10 +3,59 @@ use serde::{
     de::{DeserializeSeed, Visitor},
     Deserialize,
 };
+use serde_value::ValueDeserializer;
 
 use crate::{node::Anchor, LayoutAttribute, LayoutRegistryInner};
 
-use super::{deserialize_animation::AnimationsDeserializer, Layout, LayoutNode};
+use super::{
+    deserialize_animation::AnimationsDeserializer, Layout, LayoutNode, LayoutNodeInner,
+    UnregisteredData,
+};
+
+#[derive(PartialEq, Eq)]
+enum LayoutNodeVariantId {
+    Null,
+    Image,
+    Text,
+    Layout,
+    Group,
+}
+
+struct LayoutNodeVariantVisitor;
+
+impl<'de> Visitor<'de> for LayoutNodeVariantVisitor {
+    type Value = LayoutNodeVariantId;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("variant identifier")
+    }
+
+    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        match v {
+            "Null" => Ok(LayoutNodeVariantId::Null),
+            "Image" => Ok(LayoutNodeVariantId::Image),
+            "Text" => Ok(LayoutNodeVariantId::Text),
+            "Layout" => Ok(LayoutNodeVariantId::Layout),
+            "Group" => Ok(LayoutNodeVariantId::Group),
+            _ => Err(<E as serde::de::Error>::unknown_variant(
+                v,
+                &["Null", "Image", "Text", "Layout", "Group"],
+            )),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for LayoutNodeVariantId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_str(LayoutNodeVariantVisitor)
+    }
+}
 
 enum LayoutFieldId {
     Resolution,
@@ -57,7 +106,8 @@ enum NodeFieldId {
     Rotation,
     Anchor,
     Attributes,
-    Other(serde_value::Value),
+    NodeKind,
+    NodeData,
 }
 
 struct NodeFieldVisitor;
@@ -80,7 +130,21 @@ impl<'de> Visitor<'de> for NodeFieldVisitor {
             "rotation" => Ok(NodeFieldId::Rotation),
             "anchor" => Ok(NodeFieldId::Anchor),
             "attributes" => Ok(NodeFieldId::Attributes),
-            other => Ok(NodeFieldId::Other(serde_value::Value::String(other.to_string()))),
+            "node_kind" => Ok(NodeFieldId::NodeKind),
+            "node_data" => Ok(NodeFieldId::NodeData),
+            _ => Err(<E as serde::de::Error>::unknown_field(
+                v,
+                &[
+                    "id",
+                    "position",
+                    "size",
+                    "rotation",
+                    "anchor",
+                    "attributes",
+                    "node_kind",
+                    "node_data",
+                ],
+            )),
         }
     }
 }
@@ -119,24 +183,30 @@ impl<'de> Visitor<'de> for AttributeMapVisitor<'de> {
     where
         A: serde::de::MapAccess<'de>,
     {
-        let mut list =
-            if let Some(hint) = map.size_hint() {
-                Vec::with_capacity(hint)
-            } else {
-                vec![]
-            };
+        let mut list = if let Some(hint) = map.size_hint() {
+            Vec::with_capacity(hint)
+        } else {
+            vec![]
+        };
 
         while let Some(key) = map.next_key::<String>()? {
-            let Some(data) = self.0.attributes.get(key.as_str()) else {
-                return Err(<A::Error as serde::de::Error>::custom(
-                    format!("LayoutNode attribute '{key}' was not registered")
-                ));
-            };
-
-            let value = map.next_value::<serde_value::Value>()?;
-            let value =
-                (data.deserialize)(value).map_err(<A::Error as serde::de::Error>::custom)?;
-            list.push(value);
+            match self.0.attributes.get(key.as_str()) {
+                Some(data) => {
+                    let value = map.next_value::<serde_value::Value>()?;
+                    let value = (data.deserialize)(value)
+                        .map_err(<A::Error as serde::de::Error>::custom)?;
+                    list.push(value);
+                }
+                None if self.0.ignore_unregistered_attributes => {
+                    let value = map.next_value::<serde_json::Value>()?;
+                    list.push(Box::new(UnregisteredData { name: key, value }));
+                }
+                None => {
+                    return Err(<A::Error as serde::de::Error>::custom(format!(
+                        "LayoutNode attribute '{key}' was not registered"
+                    )));
+                }
+            }
         }
 
         Ok(list)
@@ -183,7 +253,8 @@ impl<'de> Visitor<'de> for NodeVisitor<'de> {
         let mut rotation = None;
         let mut anchor = None;
         let mut attributes = None;
-        let mut extra_content = Vec::new();
+        let mut node_kind = None;
+        let mut node_data = None;
 
         while let Some(key) = map.next_key::<NodeFieldId>()? {
             match key {
@@ -229,8 +300,19 @@ impl<'de> Visitor<'de> for NodeVisitor<'de> {
 
                     attributes = Some(map.next_value_seed(AttributeDeserializer(self.0))?);
                 }
-                NodeFieldId::Other(value) => {
-                    extra_content.push((value, map.next_value::<serde_value::Value>()?));
+                NodeFieldId::NodeKind => {
+                    if node_kind.is_some() {
+                        return dupe("node_kind");
+                    }
+
+                    node_kind = Some(map.next_value::<LayoutNodeVariantId>()?);
+                }
+                NodeFieldId::NodeData => {
+                    if node_data.is_some() {
+                        return dupe("node_data");
+                    }
+
+                    node_data = Some(map.next_value::<serde_value::Value>()?);
                 }
             }
         }
@@ -251,10 +333,44 @@ impl<'de> Visitor<'de> for NodeVisitor<'de> {
             return miss("anchor");
         }
 
-        let inner = Deserialize::deserialize(
-            serde::de::value::MapDeserializer::new(extra_content.into_iter())
-        )
-        .map_err(<A::Error as serde::de::Error>::custom)?;
+        let Some(node_kind) = node_kind else {
+            return miss("node_kind");
+        };
+
+        let inner = if node_kind == LayoutNodeVariantId::Null {
+            if node_data.is_some() {
+                return Err(<A::Error as serde::de::Error>::custom(
+                    "Null nodes do not have associated node_data",
+                ));
+            }
+
+            LayoutNodeInner::Null
+        } else {
+            let Some(node_data) = node_data else {
+                return miss("node_data");
+            };
+
+            match node_kind {
+                LayoutNodeVariantId::Image => LayoutNodeInner::Image(
+                    Deserialize::deserialize(ValueDeserializer::<A::Error>::new(node_data))
+                        .map_err(<A::Error as serde::de::Error>::custom)?,
+                ),
+                LayoutNodeVariantId::Text => LayoutNodeInner::Text(
+                    Deserialize::deserialize(ValueDeserializer::<A::Error>::new(node_data))
+                        .map_err(<A::Error as serde::de::Error>::custom)?,
+                ),
+                LayoutNodeVariantId::Layout => LayoutNodeInner::Layout(
+                    Deserialize::deserialize(ValueDeserializer::<A::Error>::new(node_data))
+                        .map_err(<A::Error as serde::de::Error>::custom)?,
+                ),
+                LayoutNodeVariantId::Group => LayoutNodeInner::Group(
+                    NodeListSeed(self.0)
+                        .deserialize(ValueDeserializer::<A::Error>::new(node_data))
+                        .map_err(<A::Error as serde::de::Error>::custom)?,
+                ),
+                LayoutNodeVariantId::Null => unreachable!(),
+            }
+        };
 
         Ok(Self::Value {
             id: unsafe { id.unwrap_unchecked() },
@@ -294,12 +410,11 @@ impl<'de> Visitor<'de> for NodeListVisitor<'de> {
     where
         A: serde::de::SeqAccess<'de>,
     {
-        let mut list =
-            if let Some(size) = seq.size_hint() {
-                Vec::with_capacity(size)
-            } else {
-                Vec::new()
-            };
+        let mut list = if let Some(size) = seq.size_hint() {
+            Vec::with_capacity(size)
+        } else {
+            Vec::new()
+        };
 
         while let Some(next) = seq.next_element_seed(NodeSeed(self.0))? {
             list.push(next);
@@ -331,14 +446,18 @@ impl<'de> Visitor<'de> for LayoutVisitor<'de> {
             match key {
                 LayoutFieldId::CanvasSize => {
                     if canvas_size.is_some() {
-                        return Err(<A::Error as serde::de::Error>::duplicate_field("canvas_size"));
+                        return Err(<A::Error as serde::de::Error>::duplicate_field(
+                            "canvas_size",
+                        ));
                     }
 
                     canvas_size = Some(map.next_value::<UVec2>()?);
                 }
                 LayoutFieldId::Resolution => {
                     if resolution.is_some() {
-                        return Err(<A::Error as serde::de::Error>::duplicate_field("resolution"));
+                        return Err(<A::Error as serde::de::Error>::duplicate_field(
+                            "resolution",
+                        ));
                     }
 
                     resolution = Some(map.next_value::<Option<UVec2>>()?);
@@ -352,7 +471,9 @@ impl<'de> Visitor<'de> for LayoutVisitor<'de> {
                 }
                 LayoutFieldId::Animations => {
                     if animations.is_some() {
-                        return Err(<A::Error as serde::de::Error>::duplicate_field("animations"));
+                        return Err(<A::Error as serde::de::Error>::duplicate_field(
+                            "animations",
+                        ));
                     }
 
                     animations = Some(map.next_value_seed(AnimationsDeserializer(self.0))?);

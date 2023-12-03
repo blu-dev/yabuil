@@ -1,8 +1,8 @@
-use std::{hint::unreachable_unchecked, sync::Arc};
+use std::{hint::unreachable_unchecked, path::Path, sync::Arc};
 
 use bevy::{ecs::query::WorldQuery, prelude::*, utils::HashMap};
 
-use crate::{views::NodeViewMut, LayoutAnimationTarget};
+use crate::{views::NodeViewMut, LayoutAnimationTarget, LayoutNodeId};
 use serde::{Deserialize, Serialize};
 
 #[derive(Default, Deserialize, Serialize)]
@@ -93,27 +93,36 @@ pub(crate) fn update_ui_layout_animations(
         *time_elapsed_ms += delta;
         let progress = *time_elapsed_ms;
 
-        let anims = entity.get::<Animations>().unwrap();
+        let anims = entity.get::<Animations>().unwrap().clone();
 
         if let Some(animation) = anims.0.get(animation.as_str()) {
             'outer: for animation in animation.iter() {
-                let children = entity.get::<Children>().unwrap();
-                for child in children.iter().copied() {
-                    // SAFETY: This is safe because we are iterating over the components serially
-                    //          and therefore we won't be holding a reference to any of the children
-                    let entity = unsafe { query.get_unchecked(child).unwrap() };
-                    let mut node_view = NodeViewMut::new(entity).unwrap();
-                    if node_view.id().name() == animation.id.as_str() {
-                        is_finished &= progress >= animation.time_ms;
-                        let interp = (progress / animation.time_ms).clamp(0.0, 1.0);
-                        animation
-                            .target
-                            .interpolate(&mut node_view, animation.time_scale.map(interp));
-                        continue 'outer;
-                    }
-                }
+                let mut entity = entity.reborrow();
+                'id_search: for id in Path::new(animation.id.as_str()).components() {
+                    let id = id.as_os_str().to_str().unwrap();
+                    let children = entity.get::<Children>().unwrap();
+                    for child in children.iter().copied() {
+                        // SAFETY: This is safe because we are iterating over the components serially
+                        //          and therefore we won't be holding a reference to any of the children
+                        let child = unsafe { query.get_unchecked(child).unwrap() };
 
-                log::warn!("Could not find node '{}' for animation", animation.id);
+                        let node_id = child.get::<LayoutNodeId>().unwrap();
+                        if node_id.name() == id {
+                            entity = child;
+                            continue 'id_search;
+                        }
+                    }
+                    log::warn!("Could not find node '{}' for animation", animation.id);
+                    continue 'outer;
+                }
+                is_finished &= progress >= animation.time_ms;
+                let interp = (progress / animation.time_ms).clamp(0.0, 1.0);
+
+                let mut node_view = NodeViewMut::new(entity).unwrap();
+
+                animation
+                    .target
+                    .interpolate(&mut node_view, animation.time_scale.map(interp));
             }
         } else {
             log::warn!("Failed to get animation {} for node", animation);

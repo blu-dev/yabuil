@@ -15,32 +15,41 @@
             }
         },
         {
-            "id": "button_image",
+            "id": "button_content",
             "position": [0.0, 0.0],
             "size": [540.0, 80.0],
             "anchor": "TopLeft",
-            "node_kind": "Image",
-            "node_data": {
-                "path": "images/button.png"
-            }
-        },
-        {
-            "id": "button_text",
-            "position": [30.0, 10.0],
-            "size": [500.0, 60.0],
-            "anchor": "TopLeft",
-            "node_kind": "Text",
-            "node_data": {
-                "text": "placeholder",
-                "size": 50.0,
-                "color": [0.7, 0.7, 0.7, 1.0]
-            }
+            "node_kind": "Group",
+            "node_data": [
+                {
+                    "id": "button_image",
+                    "position": [0.0, 0.0],
+                    "size": [540.0, 80.0],
+                    "anchor": "TopLeft",
+                    "node_kind": "Image",
+                    "node_data": {
+                        "path": "images/button.png"
+                    }
+                },
+                {
+                    "id": "button_text",
+                    "position": [30.0, 10.0],
+                    "size": [500.0, 60.0],
+                    "anchor": "TopLeft",
+                    "node_kind": "Text",
+                    "node_data": {
+                        "text": "placeholder",
+                        "size": 50.0,
+                        "color": [0.7, 0.7, 0.7, 1.0]
+                    }
+                }
+            ]
         }
     ],
     "animations": {
         "select": [
             {
-                "id": "button_image",
+                "id": "button_content",
                 "time_ms": 100.0,
                 "target": {
                     "Position": {
@@ -50,7 +59,7 @@
                 }
             },
             {
-                "id": "button_image",
+                "id": "button_content/button_image",
                 "time_ms": 100.0,
                 "target": {
                     "ImageColor": {
@@ -60,17 +69,7 @@
                 }
             },
             {
-                "id": "button_text",
-                "time_ms": 100.0,
-                "target": {
-                    "Position": {
-                        "start": [30.0, 10.0],
-                        "end": [110.0, 10.0]
-                    }
-                }
-            },
-            {
-                "id": "button_text",
+                "id": "button_content/button_text",
                 "time_ms": 100.0,
                 "target": {
                     "TextColor": {
@@ -92,7 +91,7 @@
         ],
         "unselect": [
             {
-                "id": "button_image",
+                "id": "button_content",
                 "time_ms": 100.0,
                 "target": {
                     "Position": {
@@ -102,7 +101,7 @@
                 }
             },
             {
-                "id": "button_image",
+                "id": "button_content/button_image",
                 "time_ms": 100.0,
                 "target": {
                     "ImageColor": {
@@ -112,17 +111,7 @@
                 }
             },
             {
-                "id": "button_text",
-                "time_ms": 100.0,
-                "target": {
-                    "Position": {
-                        "start": [110.0, 10.0],
-                        "end": [30.0, 10.0]
-                    }
-                }
-            },
-            {
-                "id": "button_text",
+                "id": "button_content/button_text",
                 "time_ms": 100.0,
                 "target": {
                     "TextColor": {

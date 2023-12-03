@@ -102,7 +102,7 @@ impl LayoutAttribute for MainMenuButton {
             Self::Exit => "QUIT TO DESKTOP",
         };
 
-        world.child_scope("button_text", |text| {
+        world.child_scope("button_content/button_text", |text| {
             let mut text = text.unwrap();
             text.as_text_node_mut().unwrap().set_text(name);
         });
@@ -177,7 +177,7 @@ fn startup_system(mut commands: Commands, asset_server: Res<AssetServer>) {
 
 pub fn main() {
     App::new()
-        .add_plugins((DefaultPlugins, LayoutPlugin))
+        .add_plugins((DefaultPlugins, LayoutPlugin::default()))
         .register_layout_attribute::<MainMenuButton>("MainMenuButton")
         .register_layout_attribute::<ControllerCursor>("ControllerCursor")
         .add_systems(Startup, startup_system)

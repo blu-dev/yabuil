@@ -233,7 +233,7 @@ pub fn main() {
     App::new()
         .add_plugins((
             DefaultPlugins,
-            yabuil::LayoutPlugin,
+            yabuil::LayoutPlugin::default(),
             // WorldInspectorPlugin::default(),
         ))
         .add_systems(Startup, spawn_layout)

@@ -11,6 +11,8 @@ use crate::{
     LayoutAnimationTarget, LayoutRegistryInner,
 };
 
+use super::UnregisteredData;
+
 enum AnimationDataFieldId {
     Id,
     TimeMs,
@@ -68,15 +70,22 @@ impl<'de> Visitor<'de> for TargetDeserializer<'de> {
         let key = map.next_key::<String>()?.ok_or_else(|| {
             <A::Error as serde::de::Error>::custom("expected 1 key-value pair in the target map")
         })?;
-        let deserializer = self.0.animations.get(key.as_str()).ok_or_else(|| {
-            <A::Error as serde::de::Error>::custom(
-                format!("Layout animation '{key}' was not registered")
-            )
-        })?;
 
-        let content = map.next_value::<serde_value::Value>()?;
+        match self.0.animations.get(key.as_str()) {
+            Some(data) => {
+                let content = map.next_value::<serde_value::Value>()?;
 
-        (deserializer.deserialize)(content).map_err(|e| <A::Error as serde::de::Error>::custom(e))
+                (data.deserialize)(content).map_err(|e| <A::Error as serde::de::Error>::custom(e))
+            }
+            None if self.0.ignore_unregistered_animations => {
+                let value = map.next_value::<serde_json::Value>()?;
+
+                Ok(Box::new(UnregisteredData { name: key, value }))
+            }
+            None => Err(<A::Error as serde::de::Error>::custom(format!(
+                "Layout animation '{key}' was not registered"
+            ))),
+        }
     }
 }
 
@@ -127,7 +136,9 @@ impl<'de> Visitor<'de> for NodeAnimationVisitor<'de> {
                 }
                 AnimationDataFieldId::TimeScale => {
                     if time_scale.is_some() {
-                        return Err(<A::Error as serde::de::Error>::duplicate_field("time_scale"));
+                        return Err(<A::Error as serde::de::Error>::duplicate_field(
+                            "time_scale",
+                        ));
                     }
 
                     time_scale = Some(map.next_value::<TimeBezierCurve>()?);
@@ -147,7 +158,8 @@ impl<'de> Visitor<'de> for NodeAnimationVisitor<'de> {
             time_ms: time_ms
                 .ok_or_else(|| <A::Error as serde::de::Error>::missing_field("time_ms"))?,
             time_scale: time_scale.unwrap_or_default(),
-            target: target.ok_or_else(|| <A::Error as serde::de::Error>::missing_field("target"))?,
+            target: target
+                .ok_or_else(|| <A::Error as serde::de::Error>::missing_field("target"))?,
         })
     }
 }
@@ -178,12 +190,11 @@ impl<'de> Visitor<'de> for AnimationListDeserializer<'de> {
     where
         A: serde::de::SeqAccess<'de>,
     {
-        let mut values =
-            if let Some(hint) = seq.size_hint() {
-                Vec::with_capacity(hint)
-            } else {
-                vec![]
-            };
+        let mut values = if let Some(hint) = seq.size_hint() {
+            Vec::with_capacity(hint)
+        } else {
+            vec![]
+        };
 
         while let Some(next) = seq.next_element_seed(NodeAnimationDeserializer(self.0))? {
             values.push(next);

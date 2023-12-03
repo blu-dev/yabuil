@@ -48,7 +48,7 @@ fn startup_system(mut commands: Commands, asset_server: Res<AssetServer>) {
 
 pub fn main() {
     App::new()
-        .add_plugins((DefaultPlugins, LayoutPlugin))
+        .add_plugins((DefaultPlugins, LayoutPlugin::default()))
         .register_layout_attribute::<CustomImage>("CustomImage")
         .add_systems(Startup, startup_system)
         .add_systems(Update, bevy::window::close_on_esc)
