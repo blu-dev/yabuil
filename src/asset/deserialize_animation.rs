@@ -1,6 +1,9 @@
-use std::{marker::PhantomData, sync::Arc};
+use std::{
+    marker::PhantomData,
+    sync::{Arc, RwLock},
+};
 
-use bevy::utils::HashMap;
+use indexmap::IndexMap;
 use serde::{
     de::{DeserializeSeed, Visitor},
     Deserialize,
@@ -8,7 +11,7 @@ use serde::{
 
 use crate::{
     animation::{Animations, NodeAnimation, TimeBezierCurve},
-    LayoutAnimationTarget, LayoutRegistryInner,
+    DynamicAnimationTarget, LayoutRegistryInner,
 };
 
 use super::UnregisteredData;
@@ -58,7 +61,7 @@ impl<'de> Deserialize<'de> for AnimationDataFieldId {
 struct TargetDeserializer<'de>(&'de LayoutRegistryInner);
 
 impl<'de> Visitor<'de> for TargetDeserializer<'de> {
-    type Value = Box<dyn LayoutAnimationTarget>;
+    type Value = DynamicAnimationTarget;
     fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
         formatter.write_str("registered layout animation")
     }
@@ -75,12 +78,19 @@ impl<'de> Visitor<'de> for TargetDeserializer<'de> {
             Some(data) => {
                 let content = map.next_value::<serde_value::Value>()?;
 
-                (data.deserialize)(content).map_err(|e| <A::Error as serde::de::Error>::custom(e))
+                (data.deserialize)(content, key)
+                    .map_err(|e| <A::Error as serde::de::Error>::custom(e))
             }
             None if self.0.ignore_unregistered_animations => {
                 let value = map.next_value::<serde_json::Value>()?;
 
-                Ok(Box::new(UnregisteredData { name: key, value }))
+                Ok(DynamicAnimationTarget::new(
+                    UnregisteredData {
+                        name: key.clone(),
+                        value,
+                    },
+                    key,
+                ))
             }
             None => Err(<A::Error as serde::de::Error>::custom(format!(
                 "Layout animation '{key}' was not registered"
@@ -90,7 +100,7 @@ impl<'de> Visitor<'de> for TargetDeserializer<'de> {
 }
 
 impl<'de> DeserializeSeed<'de> for TargetDeserializer<'de> {
-    type Value = Box<dyn LayoutAnimationTarget>;
+    type Value = DynamicAnimationTarget;
 
     fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
     where
@@ -229,9 +239,9 @@ impl<'de> Visitor<'de> for AnimationsDeserializer<'de> {
         A: serde::de::MapAccess<'de>,
     {
         let mut values = if let Some(hint) = map.size_hint() {
-            HashMap::with_capacity(hint)
+            IndexMap::with_capacity(hint)
         } else {
-            HashMap::new()
+            IndexMap::new()
         };
 
         while let Some((key, value)) =
@@ -240,7 +250,7 @@ impl<'de> Visitor<'de> for AnimationsDeserializer<'de> {
             values.insert(key, value);
         }
 
-        Ok(Animations(Arc::new(values)))
+        Ok(Animations(Arc::new(RwLock::new(values))))
     }
 }
 

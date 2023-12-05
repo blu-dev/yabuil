@@ -1,43 +1,51 @@
-use std::{hint::unreachable_unchecked, path::Path, sync::Arc};
+use std::{
+    hint::unreachable_unchecked,
+    path::Path,
+    sync::{Arc, RwLock},
+};
 
-use bevy::{ecs::query::WorldQuery, prelude::*, utils::HashMap};
+use bevy::{ecs::query::WorldQuery, prelude::*};
+use indexmap::IndexMap;
 
-use crate::{views::NodeViewMut, LayoutAnimationTarget, LayoutNodeId};
+use crate::{views::NodeViewMut, DynamicAnimationTarget, LayoutAnimationTarget, LayoutNodeId};
 use serde::{Deserialize, Serialize};
 
 #[derive(Default, Deserialize, Serialize)]
-pub(crate) enum TimeBezierCurve {
+pub enum TimeBezierCurve {
     #[default]
     Linear,
-    Quadratic(f32),
-    Cubic(f32, f32),
+    Quadratic(Vec2),
+    Cubic(Vec2, Vec2),
 }
 
 impl TimeBezierCurve {
     pub fn map(&self, current: f32) -> f32 {
-        match self {
-            Self::Linear => current,
+        let point = match self {
+            Self::Linear => Vec2::new(0.0, current),
             Self::Quadratic(quad) => {
-                0.0 + 2.0 * (1.0 - current) * current * *quad + current.powi(2)
+                Vec2::ZERO + 2.0 * (1.0 - current) * current * *quad + Vec2::ONE * current.powi(2)
             }
             Self::Cubic(a, b) => {
-                0.0 + 3.0 * (1.0 - current).powi(2) * current * *a
+                Vec2::ZERO
+                    + 3.0 * (1.0 - current).powi(2) * current * *a
                     + (1.0 - current) * current.powi(2) * *b
-                    + current.powi(3)
+                    + Vec2::ONE * current.powi(3)
             }
-        }
+        };
+
+        point.y
     }
 }
 
 pub struct NodeAnimation {
-    pub(crate) id: String,
-    pub(crate) time_ms: f32,
-    pub(crate) time_scale: TimeBezierCurve,
-    pub(crate) target: Box<dyn LayoutAnimationTarget>,
+    pub id: String,
+    pub time_ms: f32,
+    pub time_scale: TimeBezierCurve,
+    pub target: DynamicAnimationTarget,
 }
 
-#[derive(Clone, Component, Default)]
-pub struct Animations(pub(crate) Arc<HashMap<String, Vec<NodeAnimation>>>);
+#[derive(Clone, Component, Default, Deref, DerefMut)]
+pub struct Animations(pub Arc<RwLock<IndexMap<String, Vec<NodeAnimation>>>>);
 
 #[derive(Component, Default)]
 pub(crate) enum AnimationPlayerState {
@@ -95,7 +103,7 @@ pub(crate) fn update_ui_layout_animations(
 
         let anims = entity.get::<Animations>().unwrap().clone();
 
-        if let Some(animation) = anims.0.get(animation.as_str()) {
+        if let Some(animation) = anims.0.read().unwrap().get(animation.as_str()) {
             'outer: for animation in animation.iter() {
                 let mut entity = entity.reborrow();
                 'id_search: for id in Path::new(animation.id.as_str()).components() {
@@ -122,6 +130,7 @@ pub(crate) fn update_ui_layout_animations(
 
                 animation
                     .target
+                    .as_layout_animation_target()
                     .interpolate(&mut node_view, animation.time_scale.map(interp));
             }
         } else {
@@ -136,29 +145,25 @@ pub(crate) fn update_ui_layout_animations(
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Reflect)]
 pub struct PositionAnimation {
     pub start: Vec2,
     pub end: Vec2,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Reflect)]
 pub struct SizeAnimation {
     pub start: Vec2,
     pub end: Vec2,
 }
 
-#[derive(Serialize, Deserialize)]
-struct ColorAnimation {
-    start: [f32; 4],
-    end: [f32; 4],
+#[derive(Serialize, Deserialize, Reflect)]
+pub struct ColorAnimation {
+    #[serde(deserialize_with = "crate::asset::deserialize_color")]
+    start: Color,
+    #[serde(deserialize_with = "crate::asset::deserialize_color")]
+    end: Color,
 }
-
-#[derive(Serialize, Deserialize)]
-pub struct ImageColorAnimation(ColorAnimation);
-
-#[derive(Serialize, Deserialize)]
-pub struct TextColorAnimation(ColorAnimation);
 
 impl LayoutAnimationTarget for PositionAnimation {
     fn interpolate(&self, node: &mut NodeViewMut, interpolation: f32) {
@@ -172,32 +177,19 @@ impl LayoutAnimationTarget for SizeAnimation {
     }
 }
 
-impl ColorAnimation {
-    fn interpolate(&self, interp: f32) -> Color {
-        let [r1, g1, b1, a1] = self.start;
-        let [r2, g2, b2, a2] = self.end;
-        let start_color = Color::rgb(r1, g1, b1).as_hsla();
-        let end_color = Color::rgb(r2, g2, b2).as_hsla();
+impl LayoutAnimationTarget for ColorAnimation {
+    fn interpolate(&self, node: &mut NodeViewMut, interp: f32) {
+        let start_color = self.start.as_hsla();
+        let end_color = self.end.as_hsla();
 
         let mut color = start_color * (1.0 - interp) + end_color * interp;
 
-        color.set_a(a1 * (1.0 - interp) + a2 * interp);
-        color
-    }
-}
+        color.set_a(self.start.a() * (1.0 - interp) + self.end.a() * interp);
 
-impl LayoutAnimationTarget for ImageColorAnimation {
-    fn interpolate(&self, node: &mut NodeViewMut, interpolation: f32) {
-        node.as_image_node_mut().unwrap().update_sprite(|style| {
-            style.color = self.0.interpolate(interpolation);
-        })
-    }
-}
-
-impl LayoutAnimationTarget for TextColorAnimation {
-    fn interpolate(&self, node: &mut NodeViewMut, interpolation: f32) {
-        node.as_text_node_mut()
-            .unwrap()
-            .set_color(self.0.interpolate(interpolation));
+        if let Some(mut node) = node.as_image_node_mut() {
+            node.update_sprite(|sprite| sprite.color = color);
+        } else if let Some(mut node) = node.as_text_node_mut() {
+            node.set_color(color);
+        }
     }
 }

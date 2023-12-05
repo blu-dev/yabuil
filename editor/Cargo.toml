@@ -1,0 +1,25 @@
+[package]
+name = "editor"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bevy_egui = "0.23.0"
+egui = "0.23"
+egui_dock = "0.8"
+resvg = "0.36"
+
+bevy.workspace = true
+log.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+yabuil = { path = "../" }
+pathdiff = "0.2.1"
+egui_file = "0.13.0"
+bevy-inspector-egui = "0.21.0"
+
+[profile.dev.package."*"]
+opt-level = 3

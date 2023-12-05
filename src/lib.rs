@@ -1,4 +1,4 @@
-use animation::{ImageColorAnimation, PositionAnimation, SizeAnimation, TextColorAnimation};
+use animation::{ColorAnimation, PositionAnimation, SizeAnimation};
 use asset::{Layout, LayoutLoader};
 use bevy::{
     app::App,
@@ -13,7 +13,10 @@ use components::NodeKind;
 use input_detection::InputDetection;
 use node::LayoutInfo;
 use serde::de::DeserializeOwned;
-use std::sync::{Arc, RwLock};
+use std::{
+    any::Any,
+    sync::{Arc, RwLock},
+};
 use views::{NodeViewMut, NodeWorldViewMut};
 
 pub mod animation;
@@ -25,17 +28,124 @@ pub mod views;
 
 pub use components::{ActiveLayout, LayoutBundle, LayoutId, LayoutNodeId};
 
+#[derive(TypePath)]
+pub struct DynamicAttribute {
+    name: String,
+    data: *mut (),
+    as_any: fn(*const ()) -> *const dyn Any,
+    as_any_mut: fn(*mut ()) -> *mut dyn Any,
+    as_layout_attribute: fn(*const ()) -> *const dyn LayoutAttribute,
+    as_layout_attribute_mut: fn(*mut ()) -> *mut dyn LayoutAttribute,
+}
+
+unsafe impl Send for DynamicAttribute {}
+unsafe impl Sync for DynamicAttribute {}
+
+#[derive(TypePath)]
+pub struct DynamicAnimationTarget {
+    name: String,
+    data: *mut (),
+    as_any: fn(*const ()) -> *const dyn Any,
+    as_any_mut: fn(*mut ()) -> *mut dyn Any,
+    as_layout_animation_target: fn(*const ()) -> *const dyn LayoutAnimationTarget,
+    as_layout_animation_target_mut: fn(*mut ()) -> *mut dyn LayoutAnimationTarget,
+}
+
+unsafe impl Send for DynamicAnimationTarget {}
+unsafe impl Sync for DynamicAnimationTarget {}
+
+impl DynamicAttribute {
+    pub fn new<T: LayoutAttribute + Sized>(value: T, name: String) -> Self {
+        Self {
+            name,
+            data: (Box::leak(Box::new(value)) as *mut T).cast(),
+            as_any: |ptr| ptr.cast::<T>() as *const dyn Any,
+            as_any_mut: |ptr| ptr.cast::<T>() as *mut dyn Any,
+            as_layout_attribute: |ptr| ptr.cast::<T>() as *const dyn LayoutAttribute,
+            as_layout_attribute_mut: |ptr| ptr.cast::<T>() as *mut dyn LayoutAttribute,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    pub fn as_any(&self) -> &dyn Any {
+        unsafe { &*(self.as_any)(self.data) }
+    }
+
+    pub fn as_any_mut(&mut self) -> &mut dyn Any {
+        unsafe { &mut *(self.as_any_mut)(self.data) }
+    }
+
+    pub fn as_layout_attribute(&self) -> &dyn LayoutAttribute {
+        unsafe { &*(self.as_layout_attribute)(self.data) }
+    }
+
+    pub fn as_layout_attribute_mut(&mut self) -> &mut dyn LayoutAttribute {
+        unsafe { &mut *(self.as_layout_attribute_mut)(self.data) }
+    }
+}
+
+impl DynamicAnimationTarget {
+    pub fn new<T: LayoutAnimationTarget + Sized>(value: T, name: String) -> Self {
+        Self {
+            name,
+            data: (Box::leak(Box::new(value)) as *mut T).cast(),
+            as_any: |ptr| ptr.cast::<T>() as *const dyn Any,
+            as_any_mut: |ptr| ptr.cast::<T>() as *mut dyn Any,
+            as_layout_animation_target: |ptr| ptr.cast::<T>() as *const dyn LayoutAnimationTarget,
+            as_layout_animation_target_mut: |ptr| ptr.cast::<T>() as *mut dyn LayoutAnimationTarget,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    pub fn as_any(&self) -> &dyn Any {
+        unsafe { &*(self.as_any)(self.data) }
+    }
+
+    pub fn as_any_mut(&mut self) -> &mut dyn Any {
+        unsafe { &mut *(self.as_any_mut)(self.data) }
+    }
+
+    pub fn as_layout_animation_target(&self) -> &dyn LayoutAnimationTarget {
+        unsafe { &*(self.as_layout_animation_target)(self.data) }
+    }
+
+    pub fn as_layout_animation_target_mut(&mut self) -> &mut dyn LayoutAnimationTarget {
+        unsafe { &mut *(self.as_layout_animation_target_mut)(self.data) }
+    }
+}
+
+impl Drop for DynamicAttribute {
+    fn drop(&mut self) {
+        // SAFETY: We own the memory here and we box it before allocating and storing it
+        unsafe { drop(Box::from_raw(self.data)) }
+    }
+}
+
+impl Drop for DynamicAnimationTarget {
+    fn drop(&mut self) {
+        // SAFETY: We own the memory here and we box it before allocating and storing it
+        unsafe { drop(Box::from_raw(self.data)) }
+    }
+}
+
 /// Manages registered deserialization methods for attributes
 pub(crate) struct RegisteredAttributeData {
     deserialize:
-        fn(serde_value::Value) -> Result<Box<dyn LayoutAttribute>, serde_value::DeserializerError>,
+        fn(serde_value::Value, String) -> Result<DynamicAttribute, serde_value::DeserializerError>,
 }
 
 /// Manages registered deserialization methods for animations
 pub(crate) struct RegisteredAnimationData {
     deserialize: fn(
         serde_value::Value,
-    ) -> Result<Box<dyn LayoutAnimationTarget>, serde_value::DeserializerError>,
+        String,
+    ) -> Result<DynamicAnimationTarget, serde_value::DeserializerError>,
 }
 
 /// Internal registry of layout animations/attributes
@@ -95,11 +205,11 @@ impl LayoutRegistry {
         self.inner.write().unwrap().attributes.insert(
             name.to_string(),
             RegisteredAttributeData {
-                deserialize: |value| {
+                deserialize: |value, name| {
                     A::deserialize(serde_value::ValueDeserializer::<
                         serde_value::DeserializerError,
                     >::new(value))
-                    .map(|v| Box::new(v) as Box<dyn LayoutAttribute>)
+                    .map(|v| DynamicAttribute::new(v, name.clone()))
                 },
             },
         );
@@ -116,14 +226,15 @@ impl LayoutRegistry {
         &self,
         name: impl ToString,
     ) {
+        let name = name.to_string();
         self.inner.write().unwrap().animations.insert(
-            name.to_string(),
+            name.clone(),
             RegisteredAnimationData {
-                deserialize: |value| {
+                deserialize: |value, name| {
                     A::deserialize(serde_value::ValueDeserializer::<
                         serde_value::DeserializerError,
                     >::new(value))
-                    .map(|v| Box::new(v) as Box<dyn LayoutAnimationTarget>)
+                    .map(|v| DynamicAnimationTarget::new(v, name))
                 },
             },
         );
@@ -189,8 +300,7 @@ impl Plugin for LayoutPlugin {
         registry.register_attribute::<InputDetection>("InputDetection");
         registry.register_animation::<PositionAnimation>("Position");
         registry.register_animation::<SizeAnimation>("Size");
-        registry.register_animation::<ImageColorAnimation>("ImageColor");
-        registry.register_animation::<TextColorAnimation>("TextColor");
+        registry.register_animation::<ColorAnimation>("Color");
 
         // Register the types so that they can be used in reflection (also debugging with bevy_inspector_egui)
         app.register_type::<node::Node>()
@@ -198,7 +308,11 @@ impl Plugin for LayoutPlugin {
             .register_type::<NodeKind>()
             .register_type::<node::Anchor>()
             .register_type::<LayoutId>()
-            .register_type::<LayoutNodeId>();
+            .register_type::<LayoutNodeId>()
+            .register_type::<PositionAnimation>()
+            .register_type::<SizeAnimation>()
+            .register_type::<ColorAnimation>()
+            .register_type::<InputDetection>();
 
         // Register the asset/asset loader
         app.register_asset_loader(LayoutLoader(registry.inner.clone()))
@@ -216,6 +330,7 @@ impl Plugin for LayoutPlugin {
         .add_systems(
             PostUpdate,
             (
+                node::refresh_z_index.before(node::propagate_to_transforms),
                 node::propagate_to_transforms.before(components::update_ui_layout_transform),
                 components::update_ui_layout_transform.before(TransformSystem::TransformPropagate),
                 components::update_ui_layout_visibility
@@ -230,6 +345,11 @@ impl Plugin for LayoutPlugin {
 pub trait LayoutAttribute: Send + Sync + 'static {
     /// Runs whenever a node that has this attribute gets spawned into the ECS world
     fn apply(&self, world: &mut NodeWorldViewMut);
+
+    /// Reverts this attribute's effect, this should be reimplemented if you are going to be using
+    /// the editor!
+    #[allow(unused_variables)]
+    fn revert(&self, world: &mut NodeWorldViewMut) {}
 
     /// Runs during asset loading to help ensure that the [recursive load state](bevy::asset::RecursiveDependencyLoadState)
     /// is accurate and reflects the state of all attributes

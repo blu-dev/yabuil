@@ -14,7 +14,7 @@ use yabuil::{
     ActiveLayout, LayoutApp, LayoutAttribute, LayoutBundle, LayoutPlugin,
 };
 
-#[derive(Debug, Serialize, Deserialize, Component)]
+#[derive(Debug, Serialize, Deserialize, Component, Reflect)]
 pub struct ControllerCursor {}
 
 impl LayoutAttribute for ControllerCursor {
@@ -85,7 +85,7 @@ fn update_controller_cursor_node(
     cursor.position = bbox.center() + direction * 5.0;
 }
 
-#[derive(Debug, Serialize, Deserialize, Component, Copy, Clone)]
+#[derive(Debug, Serialize, Deserialize, Component, Copy, Clone, Reflect)]
 pub enum MainMenuButton {
     LocalPlay,
     OnlinePlay,
@@ -176,8 +176,20 @@ fn startup_system(mut commands: Commands, asset_server: Res<AssetServer>) {
 }
 
 pub fn main() {
-    App::new()
-        .add_plugins((DefaultPlugins, LayoutPlugin::default()))
+    let mut args = std::env::args();
+    let _ = args.next();
+    let editor = args.next();
+
+    let mut app = if let Some("editor") = editor.as_ref().map(|s| s.as_str()) {
+        editor::get_editor_app("./assets", "layouts/main_menu.layout.json")
+    } else {
+        let mut app = App::new();
+        app.add_plugins((DefaultPlugins, LayoutPlugin::default()));
+        app
+    };
+
+    app.register_type::<MainMenuButton>()
+        .register_type::<ControllerCursor>()
         .register_layout_attribute::<MainMenuButton>("MainMenuButton")
         .register_layout_attribute::<ControllerCursor>("ControllerCursor")
         .add_systems(Startup, startup_system)

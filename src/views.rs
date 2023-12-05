@@ -582,7 +582,8 @@ impl<'a> LayoutNodeView<'a> {
         self.0
             .get::<Animations>()
             .unwrap()
-            .0
+            .read()
+            .unwrap()
             .contains_key(animation.as_ref())
     }
 }
@@ -594,7 +595,8 @@ impl<'a> LayoutNodeViewMut<'a> {
         self.0
             .get::<Animations>()
             .unwrap()
-            .0
+            .read()
+            .unwrap()
             .contains_key(animation.as_ref())
     }
 
@@ -695,12 +697,7 @@ impl<'a: 'b, 'b> LayoutBuilder<'a, 'b> {
                         TextStyle {
                             font: data.handle.clone(),
                             font_size: data.size,
-                            color: Color::rgba(
-                                data.color[0],
-                                data.color[1],
-                                data.color[2],
-                                data.color[3],
-                            ),
+                            color: data.color,
                         },
                     ),
                     text_2d_bounds: Text2dBounds { size },

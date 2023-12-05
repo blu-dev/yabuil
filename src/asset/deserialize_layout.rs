@@ -5,7 +5,7 @@ use serde::{
 };
 use serde_value::ValueDeserializer;
 
-use crate::{node::Anchor, LayoutAttribute, LayoutRegistryInner};
+use crate::{node::Anchor, DynamicAttribute, LayoutRegistryInner};
 
 use super::{
     deserialize_animation::AnimationsDeserializer, Layout, LayoutNode, LayoutNodeInner,
@@ -173,7 +173,7 @@ impl<'de> DeserializeSeed<'de> for NodeListSeed<'de> {
 struct AttributeMapVisitor<'de>(&'de LayoutRegistryInner);
 
 impl<'de> Visitor<'de> for AttributeMapVisitor<'de> {
-    type Value = Vec<Box<dyn LayoutAttribute>>;
+    type Value = Vec<DynamicAttribute>;
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
         formatter.write_str("map of LayoutNode attributes")
@@ -193,13 +193,19 @@ impl<'de> Visitor<'de> for AttributeMapVisitor<'de> {
             match self.0.attributes.get(key.as_str()) {
                 Some(data) => {
                     let value = map.next_value::<serde_value::Value>()?;
-                    let value = (data.deserialize)(value)
+                    let value = (data.deserialize)(value, key)
                         .map_err(<A::Error as serde::de::Error>::custom)?;
                     list.push(value);
                 }
                 None if self.0.ignore_unregistered_attributes => {
                     let value = map.next_value::<serde_json::Value>()?;
-                    list.push(Box::new(UnregisteredData { name: key, value }));
+                    list.push(DynamicAttribute::new(
+                        UnregisteredData {
+                            name: key.clone(),
+                            value,
+                        },
+                        key,
+                    ));
                 }
                 None => {
                     return Err(<A::Error as serde::de::Error>::custom(format!(
@@ -216,7 +222,7 @@ impl<'de> Visitor<'de> for AttributeMapVisitor<'de> {
 struct AttributeDeserializer<'de>(&'de LayoutRegistryInner);
 
 impl<'de> DeserializeSeed<'de> for AttributeDeserializer<'de> {
-    type Value = Vec<Box<dyn LayoutAttribute>>;
+    type Value = Vec<DynamicAttribute>;
 
     fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
     where

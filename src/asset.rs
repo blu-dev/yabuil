@@ -1,25 +1,42 @@
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, RwLock},
 };
 
 use bevy::{
     asset::{Asset, AssetLoader, AsyncReadExt, Handle, VisitAssetDependencies},
     math::{UVec2, Vec2},
-    reflect::TypePath,
-    render::texture::Image,
+    reflect::{Reflect, TypePath},
+    render::{color::Color, texture::Image},
     text::{Font, TextAlignment},
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{
-    animation::Animations, node::Anchor, LayoutAnimationTarget, LayoutAttribute,
-    LayoutRegistryInner, RestrictedLoadContext,
+    animation::Animations, components::NodeKind, node::Anchor, DynamicAttribute,
+    LayoutAnimationTarget, LayoutAttribute, LayoutRegistryInner, RestrictedLoadContext,
 };
 use thiserror::Error;
 
 mod deserialize_animation;
 mod deserialize_layout;
+
+pub(crate) fn deserialize_color<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Color, D::Error> {
+    let [r, g, b, a] = <[f32; 4]>::deserialize(deserializer)?;
+    Ok(Color::rgba(r, g, b, a))
+}
+
+pub(crate) fn deserialize_color_opt<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Color>, D::Error> {
+    if let Some([r, g, b, a]) = <Option<[f32; 4]>>::deserialize(deserializer)? {
+        Ok(Some(Color::rgba(r, g, b, a)))
+    } else {
+        Ok(None)
+    }
+}
 
 /// A collection of nodes with an associated coordinate system and resolution
 #[derive(TypePath)]
@@ -45,6 +62,66 @@ pub struct Layout {
     pub animations: Animations,
 }
 
+impl Layout {
+    pub fn child_by_id(&self, id: impl AsRef<Path>) -> Option<&LayoutNode> {
+        let mut nodes = &self.nodes;
+        let path = id.as_ref();
+        let count = path.components().count();
+        'search: for (idx, id) in path.components().enumerate() {
+            let id = id.as_os_str().to_str().unwrap();
+            for node in nodes.iter() {
+                if node.id != id {
+                    continue;
+                }
+
+                if idx + 1 == count {
+                    return Some(node);
+                } else {
+                    match &node.inner {
+                        LayoutNodeInner::Group(group_nodes) => nodes = group_nodes,
+                        _ => return None,
+                    }
+                }
+
+                continue 'search;
+            }
+
+            return None;
+        }
+
+        unreachable!()
+    }
+
+    pub fn child_by_id_mut(&mut self, id: impl AsRef<Path>) -> Option<&mut LayoutNode> {
+        let mut nodes = &mut self.nodes;
+        let path = id.as_ref();
+        let count = path.components().count();
+        'search: for (idx, id) in path.components().enumerate() {
+            let id = id.as_os_str().to_str().unwrap();
+            for node in nodes.iter_mut() {
+                if node.id != id {
+                    continue;
+                }
+
+                if idx + 1 == count {
+                    return Some(node);
+                } else {
+                    match &mut node.inner {
+                        LayoutNodeInner::Group(group_nodes) => nodes = group_nodes,
+                        _ => return None,
+                    }
+                }
+
+                continue 'search;
+            }
+
+            return None;
+        }
+
+        unreachable!()
+    }
+}
+
 impl Asset for Layout {}
 
 fn visit_node_dependencies(node: &LayoutNode, visit: &mut impl FnMut(bevy::asset::UntypedAssetId)) {
@@ -61,7 +138,7 @@ fn visit_node_dependencies(node: &LayoutNode, visit: &mut impl FnMut(bevy::asset
     }
 
     for attribute in node.attributes.iter() {
-        attribute.visit_dependencies(visit);
+        attribute.as_layout_attribute().visit_dependencies(visit);
     }
 }
 
@@ -71,8 +148,18 @@ impl VisitAssetDependencies for Layout {
             visit_node_dependencies(node, visit);
         }
 
-        for node_anim in self.animations.0.values().flat_map(|anim| anim.iter()) {
-            node_anim.target.visit_dependencies(visit);
+        for node_anim in self
+            .animations
+            .0
+            .read()
+            .unwrap()
+            .values()
+            .flat_map(|anim| anim.iter())
+        {
+            node_anim
+                .target
+                .as_layout_animation_target()
+                .visit_dependencies(visit);
         }
     }
 }
@@ -118,14 +205,14 @@ pub struct LayoutNode {
     pub inner: LayoutNodeInner,
 
     /// User-space attributes for each node
-    pub(crate) attributes: Vec<Box<dyn LayoutAttribute>>,
+    pub attributes: Vec<DynamicAttribute>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct ImageNodeData {
     pub path: Option<PathBuf>,
-    #[serde(default)]
-    pub tint: Option<[f32; 4]>,
+    #[serde(default, deserialize_with = "deserialize_color_opt")]
+    pub tint: Option<Color>,
     #[serde(skip)]
     pub handle: Handle<Image>,
 }
@@ -134,7 +221,8 @@ pub struct ImageNodeData {
 pub struct TextNodeData {
     pub text: String,
     pub size: f32,
-    pub color: [f32; 4],
+    #[serde(deserialize_with = "deserialize_color")]
+    pub color: Color,
     #[serde(default)]
     pub font: Option<PathBuf>,
     #[serde(skip)]
@@ -143,7 +231,7 @@ pub struct TextNodeData {
     pub alignment: TextAlignment,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct LayoutNodeData {
     pub path: PathBuf,
     #[serde(skip)]
@@ -177,6 +265,18 @@ pub enum LayoutNodeInner {
     ///
     /// This should primarily be used to make animation easier
     Group(Vec<LayoutNode>),
+}
+
+impl LayoutNodeInner {
+    pub fn node_kind(&self) -> NodeKind {
+        match self {
+            Self::Null => NodeKind::Null,
+            Self::Image(_) => NodeKind::Image,
+            Self::Text(_) => NodeKind::Text,
+            Self::Layout(_) => NodeKind::Layout,
+            Self::Group(_) => NodeKind::Group,
+        }
+    }
 }
 
 pub(crate) struct LayoutLoader(pub(crate) Arc<RwLock<LayoutRegistryInner>>);
@@ -221,9 +321,12 @@ impl AssetLoader for LayoutLoader {
             let animations = Arc::get_mut(&mut layout.animations.0)
                 .expect("There should only be one reference to the animation map during loading");
 
-            for animation in animations.values_mut() {
+            for animation in animations.write().unwrap().values_mut() {
                 for node_anim in animation.iter_mut() {
-                    node_anim.target.initialize_dependencies(&mut context);
+                    node_anim
+                        .target
+                        .as_layout_animation_target_mut()
+                        .initialize_dependencies(&mut context);
                 }
             }
 
@@ -254,11 +357,14 @@ fn initialize_node(node: &mut LayoutNode, context: &mut RestrictedLoadContext<'_
     }
 
     for attribute in node.attributes.iter_mut() {
-        attribute.initialize_dependencies(context);
+        attribute
+            .as_layout_attribute_mut()
+            .initialize_dependencies(context);
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Reflect)]
+#[reflect_value]
 pub struct UnregisteredData {
     pub name: String,
     pub value: serde_json::Value,

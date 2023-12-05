@@ -18,7 +18,7 @@ const fn default_true() -> bool {
     true
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Reflect)]
 pub struct InputDetection {
     #[serde(default = "default_true")]
     use_camera_window: bool,
@@ -286,6 +286,12 @@ impl LayoutAttribute for InputDetection {
         }
 
         world.insert(cameras);
+    }
+
+    fn revert(&self, world: &mut NodeWorldViewMut) {
+        world
+            .as_entity_world_mut()
+            .remove::<(LayoutNodeInputDetection, ComputedBoundingBox)>();
     }
 }
 

@@ -3,24 +3,30 @@ use bevy::{
     math::vec2,
     prelude::*,
     render::camera::{ManualTextureViews, RenderTarget},
+    utils::HashSet,
     window::{PrimaryWindow, WindowRef},
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{components::RootNode, LayoutId};
+use crate::{
+    asset::{Layout, LayoutNode},
+    components::{NodeKind, RootNode},
+    LayoutId,
+};
 
 /// The Z Index of a node.
 ///
 /// This gets translated into the transform system by multiplying the Z index by `0.001`.
+///
+/// It is not recommended to change the ZIndex frequently, as doing so will proc a full
+/// re-propagation of ZIndex values throughout an entire layout. This is because the
+/// display order of nodes is based on their order in the layout files. Nodes
+/// that appear lower in a group/layout have a higher display order
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Reflect, Component, Default)]
-pub struct ZIndex(usize);
-
-impl ZIndex {
-    pub fn fetch_inc(&mut self) -> Self {
-        let this = *self;
-        self.0 += 1;
-        this
-    }
+pub enum ZIndex {
+    Calculated(usize),
+    #[default]
+    NeedsRecalculation,
 }
 
 /// The location on a [`Node`] to treat as the position
@@ -101,6 +107,15 @@ pub struct Node {
 }
 
 impl Node {
+    pub fn new_from_layout_node(node: &LayoutNode) -> Self {
+        Self {
+            anchor: node.anchor,
+            position: node.position,
+            size: node.size,
+            rotation: node.rotation,
+        }
+    }
+
     pub fn calculate_position(&self, anchor: Anchor) -> Vec2 {
         self.position + self.size * (anchor.as_vec2() - self.anchor.as_vec2())
     }
@@ -171,9 +186,12 @@ impl ComputedBoundingBox {
     }
 }
 
+#[derive(Component, Clone, Reflect)]
+pub(crate) struct LayoutHandle(pub Handle<Layout>);
+
 /// Component that contains information about a layout
 #[derive(Component, Copy, Clone, Reflect)]
-pub(crate) struct LayoutInfo {
+pub struct LayoutInfo {
     /// The scale required to convert this layout's resolution to the parent layout's scale
     ///
     /// Exammple:
@@ -258,7 +276,13 @@ pub(crate) fn propagate_to_transforms(
             node.node.position
         };
 
-        transform.translation = world_pos.extend(node.z_index.0 as f32 * 0.001);
+        match node.z_index {
+            ZIndex::Calculated(value) => {
+                transform.translation = world_pos.extend(*value as f32 * 0.001);
+            }
+            _ => {}
+        }
+
         transform.rotation = Quat::from_axis_angle(Vec3::Z, node.node.rotation.to_radians());
 
         *node.transform = transform;
@@ -374,4 +398,41 @@ pub(crate) fn propagate_to_bounding_box(
 
         *node.bounding_box = bounding_box;
     });
+}
+
+#[derive(WorldQuery)]
+#[world_query(mutable)]
+pub(crate) struct RefreshQuery {
+    z_index: &'static mut ZIndex,
+    kind: &'static NodeKind,
+    children: Option<&'static Children>,
+}
+
+pub(crate) fn refresh_z_index(
+    mut set: ParamSet<(Query<&LayoutId, Changed<ZIndex>>, Query<RefreshQuery>)>,
+    mut needs_processed: Local<HashSet<Entity>>,
+) {
+    fn handle_node(query: &Query<RefreshQuery>, entity: Entity, z_value: &mut usize) {
+        let mut node = unsafe { query.get_unchecked(entity).unwrap() };
+
+        if matches!(node.kind, NodeKind::Layout | NodeKind::Group) {
+            *node.z_index = ZIndex::Calculated(0);
+        } else {
+            *node.z_index = ZIndex::Calculated(*z_value);
+            *z_value += 1;
+        }
+
+        if let Some(children) = node.children {
+            for child in children.iter().copied() {
+                handle_node(query, child, z_value);
+            }
+        }
+    }
+
+    needs_processed.clear();
+    needs_processed.extend(set.p0().iter().map(|node| node.0));
+
+    for node in needs_processed.iter().copied() {
+        handle_node(&set.p1(), node, &mut 0);
+    }
 }
