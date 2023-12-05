@@ -287,12 +287,6 @@ impl LayoutAttribute for InputDetection {
 
         world.insert(cameras);
     }
-
-    fn revert(&self, world: &mut NodeWorldViewMut) {
-        world
-            .as_entity_world_mut()
-            .remove::<(LayoutNodeInputDetection, ComputedBoundingBox)>();
-    }
 }
 
 #[derive(SystemParam)]

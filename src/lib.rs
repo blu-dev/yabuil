@@ -346,11 +346,6 @@ pub trait LayoutAttribute: Send + Sync + 'static {
     /// Runs whenever a node that has this attribute gets spawned into the ECS world
     fn apply(&self, world: &mut NodeWorldViewMut);
 
-    /// Reverts this attribute's effect, this should be reimplemented if you are going to be using
-    /// the editor!
-    #[allow(unused_variables)]
-    fn revert(&self, world: &mut NodeWorldViewMut) {}
-
     /// Runs during asset loading to help ensure that the [recursive load state](bevy::asset::RecursiveDependencyLoadState)
     /// is accurate and reflects the state of all attributes
     #[allow(unused_variables)]

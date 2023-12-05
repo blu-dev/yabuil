@@ -57,12 +57,6 @@ impl LayoutAttribute for MainMenuButton {
             world.as_layout_node_mut().unwrap().play_animation("select");
         }
     }
-
-    fn revert(&self, world: &mut NodeWorldViewMut) {
-        world
-            .as_entity_world_mut()
-            .remove::<(FocusedMenuButton, MainMenuButton)>();
-    }
 }
 
 #[derive(Component)]
