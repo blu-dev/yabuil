@@ -235,7 +235,7 @@ impl LayoutInfo {
     /// This method assumes that `node` is a layout node that is the layout
     /// for which this info was derived from
     pub fn calculate_self_node_scale(&self, node: &Node) -> Vec2 {
-        self.resolution_scale * node.size / self.canvas_size
+        node.size / self.canvas_size
     }
 }
 

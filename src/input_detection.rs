@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     components::RootNode,
     node::{ComputedBoundingBox, LayoutInfo},
-    views::NodeWorldViewMut,
+    views::NodeEntityMut,
     ActiveLayout, LayoutAttribute, LayoutId,
 };
 
@@ -128,7 +128,7 @@ macro_rules! call_event_handlers {
             $(
                 EventKind::$kind => {
                     for callback in $state.$field.iter_mut() {
-                        (callback)($event, $cursor, &mut $node);
+                        (callback)($event, $cursor, $node.reborrow());
                     }
                 }
             )*
@@ -139,7 +139,7 @@ macro_rules! call_event_handlers {
             $(
                 EventKind::$kind => {
                     for callback in $state.$field.iter_mut() {
-                        (callback)($event, &mut $node);
+                        (callback)($event, $node.reborrow());
                     }
                 }
             )*
@@ -149,17 +149,12 @@ macro_rules! call_event_handlers {
 
 impl EntityCommand for CallGlobalEventHandlerCommand {
     fn apply(self, id: Entity, world: &mut World) {
-        let Some(mut node) = NodeWorldViewMut::new(world.entity_mut(id)) else {
+        let Ok(mut node) = NodeEntityMut::try_new(world, id) else {
             log::error!("Input detection event sent for entity which is not a node");
             return;
         };
 
-        let mut state = std::mem::take(
-            &mut *node
-                .as_entity_mut()
-                .get_mut::<LayoutNodeInputDetection>()
-                .unwrap(),
-        );
+        let mut state = std::mem::take(&mut *node.get_mut::<LayoutNodeInputDetection>().unwrap());
         call_event_handlers!(
             global self.0, state, node;
             Click => on_global_click,
@@ -172,26 +167,18 @@ impl EntityCommand for CallGlobalEventHandlerCommand {
             Unhover => on_global_unhover
         );
 
-        *node
-            .as_entity_mut()
-            .get_mut::<LayoutNodeInputDetection>()
-            .unwrap() = state;
+        *node.get_mut::<LayoutNodeInputDetection>().unwrap() = state;
     }
 }
 
 impl EntityCommand for CallEventHandlerCommand {
     fn apply(self, id: Entity, world: &mut World) {
-        let Some(mut node) = NodeWorldViewMut::new(world.entity_mut(id)) else {
+        let Ok(mut node) = NodeEntityMut::try_new(world, id) else {
             log::error!("Input detection event sent for entity which is not a node");
             return;
         };
 
-        let mut state = std::mem::take(
-            &mut *node
-                .as_entity_mut()
-                .get_mut::<LayoutNodeInputDetection>()
-                .unwrap(),
-        );
+        let mut state = std::mem::take(&mut *node.get_mut::<LayoutNodeInputDetection>().unwrap());
         call_event_handlers!(
             self.event, state, self.cursor, node;
             Click => on_click,
@@ -204,18 +191,14 @@ impl EntityCommand for CallEventHandlerCommand {
             Unhover => on_unhover
         );
 
-        *node
-            .as_entity_mut()
-            .get_mut::<LayoutNodeInputDetection>()
-            .unwrap() = state;
+        *node.get_mut::<LayoutNodeInputDetection>().unwrap() = state;
     }
 }
 
 type EventHandlerList =
-    Vec<Box<dyn FnMut(EventKind, Cursor, &mut NodeWorldViewMut) + Send + Sync + 'static>>;
+    Vec<Box<dyn FnMut(EventKind, Cursor, NodeEntityMut) + Send + Sync + 'static>>;
 
-type GlobalEventHandlerList =
-    Vec<Box<dyn FnMut(EventKind, &mut NodeWorldViewMut) + Send + Sync + 'static>>;
+type GlobalEventHandlerList = Vec<Box<dyn FnMut(EventKind, NodeEntityMut) + Send + Sync + 'static>>;
 
 macro_rules! decl_event_handlers {
     (global { $($global_name:ident),* }; specific { $($name:ident),* }) => {
@@ -233,13 +216,13 @@ macro_rules! decl_event_handlers {
 
         impl LayoutNodeInputDetection {
             $(
-                pub fn $global_name(&mut self, f: impl FnMut(EventKind, &mut NodeWorldViewMut) + Send + Sync + 'static) {
+                pub fn $global_name(&mut self, f: impl FnMut(EventKind, NodeEntityMut) + Send + Sync + 'static) {
                     self.$global_name.push(Box::new(f));
                 }
             )*
 
             $(
-                pub fn $name(&mut self, f: impl FnMut(EventKind, Cursor, &mut NodeWorldViewMut) + Send + Sync + 'static) {
+                pub fn $name(&mut self, f: impl FnMut(EventKind, Cursor, NodeEntityMut) + Send + Sync + 'static) {
                     self.$name.push(Box::new(f));
                 }
             )*
@@ -271,9 +254,9 @@ decl_event_handlers!(
 );
 
 impl LayoutAttribute for InputDetection {
-    fn apply(&self, world: &mut NodeWorldViewMut) {
-        let world = world.as_entity_world_mut();
+    const NAME: &'static str = "InputDetection";
 
+    fn apply(&self, mut world: NodeEntityMut) {
         world.insert((
             LayoutNodeInputDetection::default(),
             ComputedBoundingBox::default(),

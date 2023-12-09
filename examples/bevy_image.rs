@@ -10,11 +10,11 @@ use bevy::{
 };
 use serde::{Deserialize, Serialize};
 use yabuil::{
-    asset::Layout, views::NodeWorldViewMut, ActiveLayout, LayoutApp, LayoutAttribute, LayoutBundle,
+    asset::Layout, views::NodeEntityMut, ActiveLayout, LayoutApp, LayoutAttribute, LayoutBundle,
     LayoutPlugin,
 };
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, TypePath)]
 pub struct CustomImage {
     path: PathBuf,
     #[serde(skip)]
@@ -22,8 +22,10 @@ pub struct CustomImage {
 }
 
 impl LayoutAttribute for CustomImage {
-    fn apply(&self, world: &mut NodeWorldViewMut) {
-        world.as_entity_world_mut().insert(self.handle.clone());
+    const NAME: &'static str = "CustomImage";
+
+    fn apply(&self, mut node: NodeEntityMut) {
+        node.insert(self.handle.clone());
     }
 
     fn initialize_dependencies(&mut self, context: &mut yabuil::RestrictedLoadContext) {
@@ -49,7 +51,7 @@ fn startup_system(mut commands: Commands, asset_server: Res<AssetServer>) {
 pub fn main() {
     App::new()
         .add_plugins((DefaultPlugins, LayoutPlugin::default()))
-        .register_layout_attribute::<CustomImage>("CustomImage")
+        .register_layout_attribute::<CustomImage>()
         .add_systems(Startup, startup_system)
         .add_systems(Update, bevy::window::close_on_esc)
         .run();

@@ -1,174 +1,29 @@
-use bevy::math::{UVec2, Vec2};
+use std::marker::PhantomData;
+
+use bevy::{
+    asset::LoadContext,
+    math::{UVec2, Vec2},
+};
+use camino::Utf8PathBuf;
 use serde::{
     de::{DeserializeSeed, Visitor},
     Deserialize,
 };
 use serde_value::ValueDeserializer;
 
-use crate::{node::Anchor, DynamicAttribute, LayoutRegistryInner};
-
-use super::{
-    deserialize_animation::AnimationsDeserializer, Layout, LayoutNode, LayoutNodeInner,
-    UnregisteredData,
+use crate::{
+    animation::{Keyframes, LayoutAnimation},
+    node::Anchor,
+    DynamicAttribute, LayoutRegistryInner,
 };
 
-#[derive(PartialEq, Eq)]
-enum LayoutNodeVariantId {
-    Null,
-    Image,
-    Text,
-    Layout,
-    Group,
-}
+use super::{deserialize_animation::RawLayoutAnimationsSeed, Layout, LayoutNode, LayoutNodeInner};
 
-struct LayoutNodeVariantVisitor;
+use super::helpers::{decl_ident_parse, decl_struct_parse};
 
-impl<'de> Visitor<'de> for LayoutNodeVariantVisitor {
-    type Value = LayoutNodeVariantId;
-
-    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-        formatter.write_str("variant identifier")
-    }
-
-    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-    where
-        E: serde::de::Error,
-    {
-        match v {
-            "Null" => Ok(LayoutNodeVariantId::Null),
-            "Image" => Ok(LayoutNodeVariantId::Image),
-            "Text" => Ok(LayoutNodeVariantId::Text),
-            "Layout" => Ok(LayoutNodeVariantId::Layout),
-            "Group" => Ok(LayoutNodeVariantId::Group),
-            _ => Err(<E as serde::de::Error>::unknown_variant(
-                v,
-                &["Null", "Image", "Text", "Layout", "Group"],
-            )),
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for LayoutNodeVariantId {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        deserializer.deserialize_str(LayoutNodeVariantVisitor)
-    }
-}
-
-enum LayoutFieldId {
-    Resolution,
-    CanvasSize,
-    Nodes,
-    Animations,
-}
-
-impl<'de> Deserialize<'de> for LayoutFieldId {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        deserializer.deserialize_any(LayoutFieldVisitor)
-    }
-}
-
-struct LayoutFieldVisitor;
-
-impl<'de> Visitor<'de> for LayoutFieldVisitor {
-    type Value = LayoutFieldId;
-
-    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-        formatter.write_str("field identifier")
-    }
-
-    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-    where
-        E: serde::de::Error,
-    {
-        match v {
-            "resolution" => Ok(LayoutFieldId::Resolution),
-            "canvas_size" => Ok(LayoutFieldId::CanvasSize),
-            "nodes" => Ok(LayoutFieldId::Nodes),
-            "animations" => Ok(LayoutFieldId::Animations),
-            _ => Err(<E as serde::de::Error>::unknown_field(
-                v,
-                &["resolution", "canvas_size", "nodes", "animations"],
-            )),
-        }
-    }
-}
-
-enum NodeFieldId {
-    Id,
-    Position,
-    Size,
-    Rotation,
-    Anchor,
-    Attributes,
-    NodeKind,
-    NodeData,
-}
-
-struct NodeFieldVisitor;
-
-impl<'de> Visitor<'de> for NodeFieldVisitor {
-    type Value = NodeFieldId;
-
-    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-        formatter.write_str("field identifier")
-    }
-
-    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-    where
-        E: serde::de::Error,
-    {
-        match v {
-            "id" => Ok(NodeFieldId::Id),
-            "position" => Ok(NodeFieldId::Position),
-            "size" => Ok(NodeFieldId::Size),
-            "rotation" => Ok(NodeFieldId::Rotation),
-            "anchor" => Ok(NodeFieldId::Anchor),
-            "attributes" => Ok(NodeFieldId::Attributes),
-            "node_kind" => Ok(NodeFieldId::NodeKind),
-            "node_data" => Ok(NodeFieldId::NodeData),
-            _ => Err(<E as serde::de::Error>::unknown_field(
-                v,
-                &[
-                    "id",
-                    "position",
-                    "size",
-                    "rotation",
-                    "anchor",
-                    "attributes",
-                    "node_kind",
-                    "node_data",
-                ],
-            )),
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for NodeFieldId {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        deserializer.deserialize_str(NodeFieldVisitor)
-    }
-}
-
-struct NodeListSeed<'de>(&'de LayoutRegistryInner);
-
-impl<'de> DeserializeSeed<'de> for NodeListSeed<'de> {
-    type Value = Vec<LayoutNode>;
-    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        deserializer.deserialize_seq(NodeListVisitor(self.0))
-    }
-}
+decl_ident_parse!(variant LayoutNode(Null, Image, Text, Layout, Group));
+decl_ident_parse!(field Layout(Resolution, CanvasSize, Nodes, Animations));
+decl_ident_parse!(field Node(Id, Position, Size, Rotation, Anchor, Attributes, NodeKind, NodeData));
 
 struct AttributeMapVisitor<'de>(&'de LayoutRegistryInner);
 
@@ -193,19 +48,9 @@ impl<'de> Visitor<'de> for AttributeMapVisitor<'de> {
             match self.0.attributes.get(key.as_str()) {
                 Some(data) => {
                     let value = map.next_value::<serde_value::Value>()?;
-                    let value = (data.deserialize)(value, key)
+                    let value = (data.deserialize)(value)
                         .map_err(<A::Error as serde::de::Error>::custom)?;
                     list.push(value);
-                }
-                None if self.0.ignore_unregistered_attributes => {
-                    let value = map.next_value::<serde_json::Value>()?;
-                    list.push(DynamicAttribute::new(
-                        UnregisteredData {
-                            name: key.clone(),
-                            value,
-                        },
-                        key,
-                    ));
                 }
                 None => {
                     return Err(<A::Error as serde::de::Error>::custom(format!(
@@ -232,9 +77,9 @@ impl<'de> DeserializeSeed<'de> for AttributeDeserializer<'de> {
     }
 }
 
-struct NodeVisitor<'de>(&'de LayoutRegistryInner);
+struct NodeSeed<'de>(&'de LayoutRegistryInner);
 
-impl<'de> Visitor<'de> for NodeVisitor<'de> {
+impl<'de> Visitor<'de> for NodeSeed<'de> {
     type Value = LayoutNode;
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -245,103 +90,19 @@ impl<'de> Visitor<'de> for NodeVisitor<'de> {
     where
         A: serde::de::MapAccess<'de>,
     {
-        let dupe = |ident: &'static str| -> Result<Self::Value, A::Error> {
-            Err(<A::Error as serde::de::Error>::duplicate_field(ident))
-        };
-
-        let miss = |ident: &'static str| -> Result<Self::Value, A::Error> {
-            Err(<A::Error as serde::de::Error>::missing_field(ident))
-        };
-
-        let mut id = None;
-        let mut position = None;
-        let mut size = None;
-        let mut rotation = None;
-        let mut anchor = None;
-        let mut attributes = None;
-        let mut node_kind = None;
-        let mut node_data = None;
-
-        while let Some(key) = map.next_key::<NodeFieldId>()? {
-            match key {
-                NodeFieldId::Id => {
-                    if id.is_some() {
-                        return dupe("id");
-                    }
-
-                    id = Some(map.next_value::<String>()?);
-                }
-                NodeFieldId::Position => {
-                    if position.is_some() {
-                        return dupe("position");
-                    }
-
-                    position = Some(map.next_value::<Vec2>()?);
-                }
-                NodeFieldId::Size => {
-                    if size.is_some() {
-                        return dupe("size");
-                    }
-
-                    size = Some(map.next_value::<Vec2>()?);
-                }
-                NodeFieldId::Rotation => {
-                    if rotation.is_some() {
-                        return dupe("rotation");
-                    }
-
-                    rotation = Some(map.next_value::<f32>()?);
-                }
-                NodeFieldId::Anchor => {
-                    if anchor.is_some() {
-                        return dupe("anchor");
-                    }
-
-                    anchor = Some(map.next_value::<Anchor>()?);
-                }
-                NodeFieldId::Attributes => {
-                    if attributes.is_some() {
-                        return dupe("attributes");
-                    }
-
-                    attributes = Some(map.next_value_seed(AttributeDeserializer(self.0))?);
-                }
-                NodeFieldId::NodeKind => {
-                    if node_kind.is_some() {
-                        return dupe("node_kind");
-                    }
-
-                    node_kind = Some(map.next_value::<LayoutNodeVariantId>()?);
-                }
-                NodeFieldId::NodeData => {
-                    if node_data.is_some() {
-                        return dupe("node_data");
-                    }
-
-                    node_data = Some(map.next_value::<serde_value::Value>()?);
-                }
-            }
-        }
-
-        if id.is_none() {
-            return miss("id");
-        }
-
-        if position.is_none() {
-            return miss("position");
-        }
-
-        if size.is_none() {
-            return miss("size");
-        }
-
-        if anchor.is_none() {
-            return miss("anchor");
-        }
-
-        let Some(node_kind) = node_kind else {
-            return miss("node_kind");
-        };
+        decl_struct_parse!(
+            self, NodeFieldId, map;
+            (id => String),
+            (position => Vec2),
+            (size => Vec2),
+            (rotation => f32),
+            (anchor => Anchor),
+            (passthrough attributes => AttributeDeserializer),
+            (node_kind => LayoutNodeVariantId),
+            (node_data => serde_value::Value);
+            require(id, position, size, anchor, node_kind);
+            default(rotation, attributes)
+        );
 
         let inner = if node_kind == LayoutNodeVariantId::Null {
             if node_data.is_some() {
@@ -353,7 +114,7 @@ impl<'de> Visitor<'de> for NodeVisitor<'de> {
             LayoutNodeInner::Null
         } else {
             let Some(node_data) = node_data else {
-                return miss("node_data");
+                return Err(<A::Error as serde::de::Error>::missing_field("node_data"));
             };
 
             match node_kind {
@@ -379,18 +140,16 @@ impl<'de> Visitor<'de> for NodeVisitor<'de> {
         };
 
         Ok(Self::Value {
-            id: unsafe { id.unwrap_unchecked() },
-            position: unsafe { position.unwrap_unchecked() },
-            size: unsafe { size.unwrap_unchecked() },
-            rotation: rotation.unwrap_or_default(),
-            anchor: unsafe { anchor.unwrap_unchecked() },
+            id,
+            position,
+            size,
+            rotation,
+            anchor,
             inner,
-            attributes: attributes.unwrap_or_default(),
+            attributes,
         })
     }
 }
-
-struct NodeSeed<'de>(&'de LayoutRegistryInner);
 
 impl<'de> DeserializeSeed<'de> for NodeSeed<'de> {
     type Value = LayoutNode;
@@ -399,13 +158,23 @@ impl<'de> DeserializeSeed<'de> for NodeSeed<'de> {
     where
         D: serde::Deserializer<'de>,
     {
-        deserializer.deserialize_map(NodeVisitor(self.0))
+        deserializer.deserialize_map(self)
     }
 }
 
-struct NodeListVisitor<'de>(&'de LayoutRegistryInner);
+struct NodeListSeed<'de>(&'de LayoutRegistryInner);
 
-impl<'de> Visitor<'de> for NodeListVisitor<'de> {
+impl<'de> DeserializeSeed<'de> for NodeListSeed<'de> {
+    type Value = Vec<LayoutNode>;
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(self)
+    }
+}
+
+impl<'de> Visitor<'de> for NodeListSeed<'de> {
     type Value = Vec<LayoutNode>;
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -430,9 +199,9 @@ impl<'de> Visitor<'de> for NodeListVisitor<'de> {
     }
 }
 
-struct LayoutVisitor<'de>(&'de LayoutRegistryInner);
+struct LayoutDeserializer<'de, 'a>(&'de LayoutRegistryInner, &'de mut LoadContext<'a>);
 
-impl<'de> Visitor<'de> for LayoutVisitor<'de> {
+impl<'de> Visitor<'de> for LayoutDeserializer<'de, '_> {
     type Value = Layout;
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -443,85 +212,60 @@ impl<'de> Visitor<'de> for LayoutVisitor<'de> {
     where
         A: serde::de::MapAccess<'de>,
     {
-        let mut resolution = None;
-        let mut canvas_size = None;
-        let mut nodes = None;
-        let mut animations = None;
+        decl_struct_parse!(
+            self, LayoutFieldId, map;
+            (canvas_size => UVec2),
+            (resolution => Option<UVec2>),
+            (passthrough nodes => NodeListSeed),
+            (passthrough animations => RawLayoutAnimationsSeed);
+            require(canvas_size, nodes);
+            default(resolution, animations)
+        );
 
-        while let Some(key) = map.next_key::<LayoutFieldId>()? {
-            match key {
-                LayoutFieldId::CanvasSize => {
-                    if canvas_size.is_some() {
-                        return Err(<A::Error as serde::de::Error>::duplicate_field(
-                            "canvas_size",
-                        ));
-                    }
+        let mut handles = Vec::with_capacity(animations.0.len());
 
-                    canvas_size = Some(map.next_value::<UVec2>()?);
-                }
-                LayoutFieldId::Resolution => {
-                    if resolution.is_some() {
-                        return Err(<A::Error as serde::de::Error>::duplicate_field(
-                            "resolution",
-                        ));
-                    }
-
-                    resolution = Some(map.next_value::<Option<UVec2>>()?);
-                }
-                LayoutFieldId::Nodes => {
-                    if nodes.is_some() {
-                        return Err(<A::Error as serde::de::Error>::duplicate_field("nodes"));
-                    }
-
-                    nodes = Some(map.next_value_seed(NodeListSeed(self.0))?);
-                }
-                LayoutFieldId::Animations => {
-                    if animations.is_some() {
-                        return Err(<A::Error as serde::de::Error>::duplicate_field(
-                            "animations",
-                        ));
-                    }
-
-                    animations = Some(map.next_value_seed(AnimationsDeserializer(self.0))?);
-                }
-            }
-        }
-
-        if canvas_size.is_none() {
-            return Err(<A::Error as serde::de::Error>::missing_field("canvas_size"));
-        }
-
-        if nodes.is_none() {
-            return Err(<A::Error as serde::de::Error>::missing_field("nodes"));
+        for (name, node_set) in animations.0 {
+            handles.push(self.1.labeled_asset_scope(name, move |_context| {
+                LayoutAnimation(
+                    node_set
+                        .into_iter()
+                        .map(|(node_id, keyframes)| {
+                            (
+                                Utf8PathBuf::from(node_id),
+                                Keyframes::flatten_raw_keyframes(keyframes),
+                            )
+                        })
+                        .collect(),
+                )
+            }));
         }
 
         Ok(Self::Value {
-            resolution: resolution.unwrap_or_default(),
-            canvas_size: unsafe { canvas_size.unwrap_unchecked() },
-            nodes: unsafe { nodes.unwrap_unchecked() },
-            animations: animations.unwrap_or_default(),
+            resolution,
+            canvas_size,
+            nodes,
+            animations: handles,
         })
     }
 }
 
-struct LayoutDeserializer<'de>(&'de LayoutRegistryInner);
-
-impl<'de> DeserializeSeed<'de> for LayoutDeserializer<'de> {
+impl<'de> DeserializeSeed<'de> for LayoutDeserializer<'de, '_> {
     type Value = Layout;
 
     fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        deserializer.deserialize_map(LayoutVisitor(self.0))
+        deserializer.deserialize_map(self)
     }
 }
 
-pub(super) fn deserialize_layout(
-    data: &[u8],
-    registry: &LayoutRegistryInner,
+pub(super) fn deserialize_layout<'a>(
+    data: &'a [u8],
+    registry: &'a LayoutRegistryInner,
+    context: &'a mut LoadContext,
 ) -> Result<Layout, serde_json::Error> {
     let mut deserializer = serde_json::Deserializer::from_slice(data);
 
-    LayoutDeserializer(registry).deserialize(&mut deserializer)
+    LayoutDeserializer(registry, context).deserialize(&mut deserializer)
 }

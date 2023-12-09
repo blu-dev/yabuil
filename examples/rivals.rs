@@ -3,19 +3,14 @@ use std::path::PathBuf;
 use bevy::{
     core_pipeline::clear_color::ClearColorConfig,
     prelude::*,
-    render::{
-        camera::Viewport,
-        texture::{ImageLoaderSettings, ImageSampler},
-    },
-    window::PrimaryWindow,
+    render::texture::{ImageLoaderSettings, ImageSampler},
 };
-use editor::UiState;
 use serde::{Deserialize, Serialize};
 use yabuil::{
-    views::NodeWorldViewMut, ActiveLayout, LayoutApp, LayoutAttribute, LayoutBundle, LayoutPlugin,
+    views::NodeEntityMut, ActiveLayout, LayoutApp, LayoutAttribute, LayoutBundle, LayoutPlugin,
 };
 
-#[derive(Deserialize, Serialize, Component, Copy, Clone, PartialEq, Eq)]
+#[derive(Deserialize, Serialize, Component, Copy, Clone, PartialEq, Eq, Reflect)]
 pub enum MainMenuButton {
     LocalPlay,
     OnlinePlay,
@@ -50,11 +45,16 @@ impl MainMenuButton {
 }
 
 impl LayoutAttribute for MainMenuButton {
-    fn apply(&self, world: &mut yabuil::views::NodeWorldViewMut) {
-        world.as_entity_world_mut().insert(*self);
+    const NAME: &'static str = "MainMenuButton";
+
+    fn apply(&self, mut world: NodeEntityMut) {
+        world.insert(*self);
         if matches!(self, MainMenuButton::LocalPlay) {
-            world.as_entity_world_mut().insert(FocusedMenuButton);
-            world.as_layout_node_mut().unwrap().play_animation("select");
+            world
+                .insert(FocusedMenuButton)
+                .layout()
+                .play_animation("select")
+                .unwrap();
         }
     }
 }
@@ -95,10 +95,10 @@ fn update_menu_buttons(
         .entity(entity)
         .remove::<FocusedMenuButton>()
         .add(|entity: EntityWorldMut| {
-            let mut node = NodeWorldViewMut::new(entity).unwrap();
-            node.as_layout_node_mut()
-                .unwrap()
-                .play_animation("unselect");
+            NodeEntityMut::from_entity_world_mut(entity)
+                .layout()
+                .play_animation("unselect")
+                .unwrap();
         });
 
     let next = if is_down {
@@ -116,126 +116,66 @@ fn update_menu_buttons(
         .entity(entity)
         .insert(FocusedMenuButton)
         .add(|entity: EntityWorldMut| {
-            let mut node = NodeWorldViewMut::new(entity).unwrap();
-            node.as_layout_node_mut().unwrap().play_animation("select");
+            NodeEntityMut::from_entity_world_mut(entity)
+                .layout()
+                .play_animation("select")
+                .unwrap();
         });
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, Reflect)]
 pub struct ReplaceImage {
     id: String,
     path: PathBuf,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, Reflect)]
 pub struct ReplaceText {
     id: String,
     text: String,
 }
 
 impl LayoutAttribute for ReplaceImage {
-    fn apply(&self, world: &mut yabuil::views::NodeWorldViewMut) {
-        world.child_scope(self.id.as_str(), |node| {
-            let Some(mut node) = node else {
-                log::warn!("No child by the name of {}", self.id);
-                return;
-            };
+    const NAME: &'static str = "ReplaceImage";
+    fn apply(&self, mut world: NodeEntityMut) {
+        let mut child = world.child(self.id.as_str());
 
-            let handle = node
-                .world()
-                .resource::<AssetServer>()
-                .load_with_settings::<_, ImageLoaderSettings>(self.path.clone(), |settings| {
-                    settings.sampler = ImageSampler::nearest()
-                });
+        let handle = child
+            .world()
+            .resource::<AssetServer>()
+            .load_with_settings::<_, ImageLoaderSettings>(self.path.clone(), |settings| {
+                settings.sampler = ImageSampler::nearest();
+            });
 
-            node.as_image_node_mut().unwrap().set_image(handle);
-        });
+        child.image().set_image(handle);
     }
 }
 
 impl LayoutAttribute for ReplaceText {
-    fn apply(&self, world: &mut yabuil::views::NodeWorldViewMut) {
-        world.child_scope(self.id.as_str(), |node| {
-            let Some(mut node) = node else {
-                log::warn!("No child by the name of {}", self.id);
-                return;
-            };
+    const NAME: &'static str = "ReplaceText";
 
-            node.as_text_node_mut().unwrap().set_text(self.text.clone());
-        });
+    fn apply(&self, mut world: NodeEntityMut) {
+        world
+            .child(self.id.as_str())
+            .text()
+            .set_text(self.text.clone());
     }
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, Reflect)]
 pub struct NearestNeighbor {}
 
-#[derive(Deserialize, Serialize)]
-pub struct ImageTint {
-    color: [f32; 4],
-}
-
 impl LayoutAttribute for NearestNeighbor {
-    fn apply(&self, world: &mut yabuil::views::NodeWorldViewMut) {
-        let handle = world.as_image_node().unwrap().image();
+    const NAME: &'static str = "NearestNeighbor";
+    fn apply(&self, mut world: NodeEntityMut) {
+        let handle = world.image().image().id();
 
-        world.as_entity_world_mut().world_scope(|world| {
-            world
-                .resource_mut::<Assets<Image>>()
-                .get_mut(handle.id())
-                .unwrap()
-                .sampler = ImageSampler::nearest();
-        });
-    }
-}
-
-impl LayoutAttribute for ImageTint {
-    fn apply(&self, world: &mut yabuil::views::NodeWorldViewMut) {
-        world.as_image_node_mut().unwrap().update_sprite(|sprite| {
-            sprite.color = Color::rgba(self.color[0], self.color[1], self.color[2], self.color[3]);
-        });
-    }
-}
-
-fn update_camera_for_editor(
-    mut cameras: Query<&mut Camera>,
-    ui_state: Res<editor::UiState>,
-    window: Query<&Window, With<PrimaryWindow>>,
-) {
-    let Ok(screen_window) = window.get_single() else {
-        return;
-    };
-
-    println!(
-        "{} {}",
-        screen_window.physical_width(),
-        screen_window.physical_height()
-    );
-
-    let window = ui_state.game_window;
-
-    let scale_factor = screen_window.scale_factor() as f32;
-
-    let width = window.width() * scale_factor;
-    let height = window.height() * scale_factor;
-
-    let x_size = Vec2::new(width, width * 9.0 / 16.0);
-    let y_size = Vec2::new(height * 16.0 / 9.0, height);
-
-    let size = if x_size.y > height { y_size } else { x_size };
-
-    let size = size;
-
-    let position_x = (width - size.x) / 2.0;
-    let position_y = (height - size.y) / 2.0;
-    let position = (window.min * scale_factor + Vec2::new(position_x, position_y)).as_uvec2();
-    let size = size.as_uvec2();
-
-    for mut camera in cameras.iter_mut() {
-        camera.viewport = Some(Viewport {
-            physical_position: position,
-            physical_size: size,
-            ..default()
-        });
+        world
+            .world_mut()
+            .resource_mut::<Assets<Image>>()
+            .get_mut(handle)
+            .unwrap()
+            .sampler = ImageSampler::nearest();
     }
 }
 
@@ -280,29 +220,14 @@ impl FromWorld for MenuMoveSfx {
 }
 
 pub fn main() {
-    let mut args = std::env::args();
-    let _ = args.next();
-    let editor = args.next();
-
-    let mut app = if let Some("editor") = editor.as_ref().map(|s| s.as_str()) {
-        editor::get_editor_app("./assets", "layouts/rivals_main_menu1.layout.json")
-    } else {
-        let mut app = App::new();
-        app.add_plugins((DefaultPlugins, LayoutPlugin::default()));
-        app
-    };
-
-    app.add_systems(Startup, spawn_layout)
+    App::new()
+        .add_plugins((DefaultPlugins, LayoutPlugin::default()))
+        .add_systems(Startup, spawn_layout)
         .add_systems(Update, update_menu_buttons)
-        .register_layout_attribute::<NearestNeighbor>("NearestNeighbor")
-        .register_layout_attribute::<ImageTint>("ImageTint")
-        .register_layout_attribute::<ReplaceImage>("ReplaceImage")
-        .register_layout_attribute::<ReplaceText>("ReplaceText")
-        .register_layout_attribute::<MainMenuButton>("MainMenuButton")
+        .register_layout_attribute::<NearestNeighbor>()
+        .register_layout_attribute::<ReplaceImage>()
+        .register_layout_attribute::<ReplaceText>()
+        .register_layout_attribute::<MainMenuButton>()
         .init_resource::<MenuMoveSfx>()
-        .add_systems(
-            PostUpdate,
-            update_camera_for_editor.run_if(resource_exists::<UiState>()),
-        )
         .run();
 }

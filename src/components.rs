@@ -12,11 +12,17 @@ use bevy::{
 };
 use thiserror::Error;
 
-use crate::asset::Layout;
+use crate::{asset::Layout, views::NodeEntityMut};
 
 use self::spawning::spawn_layout;
 
 pub mod spawning;
+
+#[derive(Event)]
+pub struct LoadedLayout {
+    pub id: LayoutId,
+    pub handle: Handle<Layout>,
+}
 
 #[derive(Copy, Clone, Component, Reflect)]
 pub struct LayoutId(pub Entity);
@@ -30,7 +36,8 @@ impl LayoutNodeId {
     }
 
     pub fn qualified(&self) -> &Path {
-        self.0.as_path()
+        let path = self.0.as_path();
+        path.strip_prefix("__root").unwrap_or(path)
     }
 
     pub fn name(&self) -> &str {
@@ -65,12 +72,16 @@ pub struct RootNode {
     handle: Handle<Layout>,
 }
 
+#[derive(Component)]
+struct OnLoadCallback(Option<Box<dyn FnOnce(NodeEntityMut) + Send + Sync + 'static>>);
+
 #[derive(Bundle)]
 pub struct LayoutBundle {
     root: RootNode,
     awaiting_creation: PendingStatus,
     visibility: VisibilityBundle,
     transform: TransformBundle,
+    on_load: OnLoadCallback,
 }
 
 impl LayoutBundle {
@@ -83,7 +94,16 @@ impl LayoutBundle {
                 ..default()
             },
             transform: TransformBundle::default(),
+            on_load: OnLoadCallback(None),
         }
+    }
+
+    pub fn with_on_load_callback(
+        mut self,
+        f: impl FnOnce(NodeEntityMut) + Send + Sync + 'static,
+    ) -> Self {
+        self.on_load.0 = Some(Box::new(f));
+        self
     }
 }
 
@@ -147,9 +167,9 @@ pub(crate) fn spawn_layout_system(
         let entity = root.entity;
 
         commands.add(move |world: &mut World| {
-            let result = spawn_layout(world, entity, root_handle, |node, mut child| {
+            let result = spawn_layout(world, entity, root_handle.clone(), |node, mut child| {
                 for attribute in node.attributes.iter() {
-                    attribute.as_layout_attribute().apply(&mut child);
+                    attribute.apply(child.reborrow());
                 }
             });
 
@@ -160,6 +180,13 @@ pub(crate) fn spawn_layout_system(
                 *root.get_mut::<PendingStatus>().unwrap() = PendingStatus::Failed;
             } else {
                 root.remove::<PendingStatus>();
+                let callback = root
+                    .get_mut::<OnLoadCallback>()
+                    .and_then(|mut cb| cb.0.take());
+                root.remove::<OnLoadCallback>();
+                if let Some(cb) = callback {
+                    cb(NodeEntityMut::from_entity_world_mut(root));
+                }
             }
         });
     }

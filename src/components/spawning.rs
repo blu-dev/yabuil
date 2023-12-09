@@ -1,14 +1,15 @@
 use bevy::{
     prelude::*,
+    render::view::RenderLayers,
     sprite::Anchor,
     text::{Text2dBounds, TextLayoutInfo},
 };
 
 use crate::{
-    animation::AnimationPlayerState,
+    animation::LayoutAnimationPlaybackState,
     asset::{ImageNodeData, Layout, LayoutNode, TextNodeData},
     node::{LayoutHandle, LayoutInfo, ZIndex},
-    views::NodeWorldViewMut,
+    views::NodeEntityMut,
     LayoutId, LayoutNodeId,
 };
 use crate::{
@@ -18,14 +19,15 @@ use crate::{
 
 use super::{NodeKind, SpawnLayoutError};
 
-struct SpawnNodeContext<'a> {
-    world: &'a mut World,
-    assets: &'a Assets<Layout>,
-    visitor: &'a mut dyn FnMut(&LayoutNode, NodeWorldViewMut),
-    root: LayoutId,
-    parent: LayoutNodeId,
+pub(crate) struct SpawnNodeContext<'a> {
+    pub world: &'a mut World,
+    pub assets: &'a Assets<Layout>,
+    pub visitor: &'a mut dyn FnMut(&LayoutNode, NodeEntityMut),
+    pub root: LayoutId,
+    pub parent: LayoutNodeId,
+    pub layers: RenderLayers,
 
-    parent_layout: &'a Layout,
+    pub parent_layout: &'a Layout,
 }
 
 impl<'a> SpawnNodeContext<'a> {
@@ -36,6 +38,7 @@ impl<'a> SpawnNodeContext<'a> {
             visitor: self.visitor,
             root: self.root,
             parent: self.parent.join(id),
+            layers: self.layers,
             parent_layout: self.parent_layout,
         }
     }
@@ -46,6 +49,7 @@ impl<'a> SpawnNodeContext<'a> {
             assets: self.assets,
             visitor: self.visitor,
             root: self.root,
+            layers: self.layers,
             parent: self.parent.join(id),
             parent_layout: layout,
         }
@@ -62,6 +66,7 @@ fn spawn_null_node(context: SpawnNodeContext<'_>, node: &LayoutNode) -> Entity {
             NodeKind::Null,
             context.root,
             context.parent.join(node.id.as_str()),
+            context.layers,
             ZIndex::default(),
         ))
         .id()
@@ -81,6 +86,7 @@ fn spawn_image_node(
             NodeKind::Image,
             context.root,
             context.parent.join(node.id.as_str()),
+            context.layers,
             ZIndex::default(),
             Sprite {
                 color: image.tint.unwrap_or(Color::WHITE),
@@ -112,6 +118,7 @@ fn spawn_text_node(
             NodeKind::Text,
             context.root,
             context.parent.join(node.id.as_str()),
+            context.layers,
             ZIndex::default(),
             Text::from_section(
                 text.text.clone(),
@@ -138,6 +145,11 @@ fn spawn_layout_node(
         .get(layout.handle.id())
         .ok_or(SpawnLayoutError::NotLoaded)?;
 
+    let playback_state = LayoutAnimationPlaybackState::new(
+        context.world.resource::<AssetServer>(),
+        asset.animations.iter().map(|handle| handle.id()),
+    );
+
     let parent = context
         .world
         .spawn((
@@ -147,6 +159,7 @@ fn spawn_layout_node(
             NodeKind::Layout,
             context.root,
             context.parent.join(node.id.as_str()),
+            context.layers,
             ZIndex::default(),
             LayoutInfo {
                 resolution_scale: context.parent_layout.get_resolution().as_vec2()
@@ -154,8 +167,7 @@ fn spawn_layout_node(
                 canvas_size: asset.canvas_size.as_vec2(),
             },
             LayoutHandle(layout.handle.clone()),
-            AnimationPlayerState::NotPlaying,
-            asset.animations.clone(),
+            playback_state,
         ))
         .id();
 
@@ -170,8 +182,7 @@ fn spawn_layout_node(
     }
 
     for (node, child) in asset.nodes.iter().zip(children.into_iter()) {
-        let child = NodeWorldViewMut::new(context.world.entity_mut(child))
-            .expect("freshly spawned node should be viewable");
+        let child = NodeEntityMut::new(context.world, child);
         (context.visitor)(node, child);
     }
 
@@ -192,6 +203,7 @@ fn spawn_group_node(
             NodeKind::Group,
             context.root,
             context.parent.join(node.id.as_str()),
+            context.layers,
             ZIndex::default(),
             LayoutInfo {
                 resolution_scale: Vec2::ONE,
@@ -211,15 +223,14 @@ fn spawn_group_node(
     }
 
     for (node, child) in group.iter().zip(children.into_iter()) {
-        let child = NodeWorldViewMut::new(context.world.entity_mut(child))
-            .expect("freshly spawned node should be viewable");
+        let child = NodeEntityMut::new(context.world, child);
         (context.visitor)(node, child);
     }
 
     Ok(parent)
 }
 
-fn spawn_node(
+pub(crate) fn spawn_node(
     context: SpawnNodeContext<'_>,
     node: &LayoutNode,
 ) -> Result<Entity, SpawnLayoutError> {
@@ -238,10 +249,21 @@ pub fn spawn_layout(
     world: &mut World,
     root: Entity,
     handle: Handle<Layout>,
-    mut visitor: impl FnMut(&LayoutNode, NodeWorldViewMut),
+    mut visitor: impl FnMut(&LayoutNode, NodeEntityMut),
 ) -> Result<(), SpawnLayoutError> {
     world.resource_scope::<Assets<Layout>, _>(|world, assets| {
         let asset = assets.get(handle.id()).ok_or(SpawnLayoutError::NotLoaded)?;
+
+        let layers = world
+            .entity(root)
+            .get::<RenderLayers>()
+            .copied()
+            .unwrap_or_default();
+
+        let playback_state = LayoutAnimationPlaybackState::new(
+            world.resource::<AssetServer>(),
+            asset.animations.iter().map(|handle| handle.id()),
+        );
 
         world.entity_mut(root).insert((
             Node {
@@ -259,7 +281,7 @@ pub fn spawn_layout(
                 canvas_size: asset.canvas_size.as_vec2(),
             },
             LayoutHandle(handle.clone()),
-            AnimationPlayerState::NotPlaying,
+            playback_state,
         ));
 
         let mut children = vec![];
@@ -271,6 +293,7 @@ pub fn spawn_layout(
                     visitor: &mut visitor,
                     root: LayoutId(root),
                     parent: LayoutNodeId::root(),
+                    layers,
                     parent_layout: asset,
                 },
                 node,
@@ -281,8 +304,7 @@ pub fn spawn_layout(
         }
 
         for (node, child) in asset.nodes.iter().zip(children.into_iter()) {
-            let child = NodeWorldViewMut::new(world.entity_mut(child))
-                .expect("freshly spawned node should be viewable");
+            let child = NodeEntityMut::new(world, child);
             (visitor)(node, child);
         }
 

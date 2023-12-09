@@ -6,20 +6,21 @@ use std::{
 use bevy::{
     asset::{Asset, AssetLoader, AsyncReadExt, Handle, VisitAssetDependencies},
     math::{UVec2, Vec2},
-    reflect::{Reflect, TypePath},
+    reflect::TypePath,
     render::{color::Color, texture::Image},
     text::{Font, TextAlignment},
 };
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{
-    animation::Animations, components::NodeKind, node::Anchor, DynamicAttribute,
-    LayoutAnimationTarget, LayoutAttribute, LayoutRegistryInner, RestrictedLoadContext,
+    animation::LayoutAnimation, components::NodeKind, node::Anchor, DynamicAttribute,
+    LayoutRegistryInner, RestrictedLoadContext,
 };
 use thiserror::Error;
 
 mod deserialize_animation;
 mod deserialize_layout;
+mod helpers;
 
 pub(crate) fn deserialize_color<'de, D: Deserializer<'de>>(
     deserializer: D,
@@ -59,7 +60,7 @@ pub struct Layout {
     pub nodes: Vec<LayoutNode>,
 
     /// Animations associated with this layout
-    pub animations: Animations,
+    pub animations: Vec<Handle<LayoutAnimation>>,
 }
 
 impl Layout {
@@ -138,7 +139,7 @@ fn visit_node_dependencies(node: &LayoutNode, visit: &mut impl FnMut(bevy::asset
     }
 
     for attribute in node.attributes.iter() {
-        attribute.as_layout_attribute().visit_dependencies(visit);
+        attribute.visit_dependencies(visit);
     }
 }
 
@@ -146,20 +147,6 @@ impl VisitAssetDependencies for Layout {
     fn visit_dependencies(&self, visit: &mut impl FnMut(bevy::asset::UntypedAssetId)) {
         for node in self.nodes.iter() {
             visit_node_dependencies(node, visit);
-        }
-
-        for node_anim in self
-            .animations
-            .0
-            .read()
-            .unwrap()
-            .values()
-            .flat_map(|anim| anim.iter())
-        {
-            node_anim
-                .target
-                .as_layout_animation_target()
-                .visit_dependencies(visit);
         }
     }
 }
@@ -309,25 +296,16 @@ impl AssetLoader for LayoutLoader {
             let mut bytes = vec![];
             reader.read_to_end(&mut bytes).await?;
 
-            let mut layout: Layout =
-                deserialize_layout::deserialize_layout(&bytes, &self.0.read().unwrap())?;
+            let mut layout: Layout = deserialize_layout::deserialize_layout(
+                &bytes,
+                &self.0.read().unwrap(),
+                load_context,
+            )?;
 
             let mut context = RestrictedLoadContext { load_context };
 
             for node in layout.nodes.iter_mut() {
                 initialize_node(node, &mut context);
-            }
-
-            let animations = Arc::get_mut(&mut layout.animations.0)
-                .expect("There should only be one reference to the animation map during loading");
-
-            for animation in animations.write().unwrap().values_mut() {
-                for node_anim in animation.iter_mut() {
-                    node_anim
-                        .target
-                        .as_layout_animation_target_mut()
-                        .initialize_dependencies(&mut context);
-                }
             }
 
             Ok(layout)
@@ -357,23 +335,6 @@ fn initialize_node(node: &mut LayoutNode, context: &mut RestrictedLoadContext<'_
     }
 
     for attribute in node.attributes.iter_mut() {
-        attribute
-            .as_layout_attribute_mut()
-            .initialize_dependencies(context);
+        attribute.initialize_dependencies(context);
     }
-}
-
-#[derive(Debug, Clone, Reflect)]
-#[reflect_value]
-pub struct UnregisteredData {
-    pub name: String,
-    pub value: serde_json::Value,
-}
-
-impl LayoutAttribute for UnregisteredData {
-    fn apply(&self, _: &mut crate::views::NodeWorldViewMut) {}
-}
-
-impl LayoutAnimationTarget for UnregisteredData {
-    fn interpolate(&self, _: &mut crate::views::NodeViewMut, _: f32) {}
 }

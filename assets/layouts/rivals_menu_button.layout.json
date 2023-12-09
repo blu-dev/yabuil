@@ -9,13 +9,11 @@
             "anchor": "TopLeft",
             "node_kind": "Image",
             "node_data": {
-                "path": "images/rivals_player_indicator.png"
+                "path": "images/rivals_player_indicator.png",
+                "tint": [0.0, 0.0, 0.0, 0.0]
             },
             "attributes": {
-                "NearestNeighbor": {},
-                "ImageTint": {
-                    "color": [1.0, 1.0, 1.0, 0.0]
-                }
+                "NearestNeighbor": {}
             }
         },
         {
@@ -38,13 +36,11 @@
             "anchor": "TopLeft",
             "node_kind": "Image",
             "node_data": {
-                "path": "images/rivals_button_selected.png"
+                "path": "images/rivals_button_selected.png",
+                "tint": [1.0, 1.0, 1.0, 0.0]
             },
             "attributes": {
-                "NearestNeighbor": {},
-                "ImageTint": {
-                    "color": [1.0, 1.0, 1.0, 0.0]
-                }
+                "NearestNeighbor": {}
             }
         },
         {
@@ -61,119 +57,94 @@
         }
     ],
     "animations": {
-        "select": [
-            {
-                "id": "button_image",
-                "time_ms": 1.0,
-                "target": {
-                    "Color": {
-                        "start": [1.0, 1.0, 1.0, 1.0],
-                        "end": [1.0, 1.0, 1.0, 0.0]
-                    }
-                }
-            },
-            {
-                "id": "button_selected",
-                "time_ms": 1.0,
-                "target": {
-                    "Color": {
-                        "start": [1.0, 1.0, 1.0, 0.0],
-                        "end": [1.0, 1.0, 1.0, 1.0]
-                    }
-                }
-            },
-            {
-                "id": "button_selected",
-                "time_ms": 60.0,
-                "target": {
-                    "Position": {
-                        "start": [0.0, -30.0],
-                        "end": [0.0, 0.0]
-                    }
-                }
-            },
-            {
-                "id": "button_text",
-                "time_ms": 1.0,
-                "target": {
-                    "Color": {
-                        "start": [1.0, 1.0, 1.0, 1.0],
-                        "end": [0.0, 0.0, 0.0, 1.0]
-                    }
-                }
-            },
-            {
-                "id": "button_text",
-                "time_ms": 60.0,
-                "target": {
-                    "Position": {
-                        "start": [116.0, -6.0],
-                        "end": [116.0, 24.0]
-                    }
-                }
-            },
-            {
-                "id": "player_indicator",
-                "time_ms": 1.0,
-                "target": {
-                    "Color": {
-                        "start": [1.0, 1.0, 1.0, 0.0],
-                        "end": [1.0, 1.0, 1.0, 1.0]
-                    }
-                }
-            },
-            {
-                "id": "player_indicator",
-                "time_ms": 60.0,
-                "target": {
-                    "Position": {
-                        "start": [0.0, -30],
-                        "end": [0.0, 0.0]
-                    }
-                }
+      "select": {
+        "button_image": [
+          {
+            "timestamp_ms": 0,
+            "targets": {
+              "Color": [1.0, 1.0, 1.0, 0.0]
             }
+          }
         ],
-        "unselect": [
-            {
-                "id": "button_image",
-                "time_ms": 1.0,
-                "target": {
-                    "Color": {
-                        "start": [1.0, 1.0, 1.0, 0.0],
-                        "end": [1.0, 1.0, 1.0, 1.0]
-                    }
-                }
-            },
-            {
-                "id": "button_selected",
-                "time_ms": 1.0,
-                "target": {
-                    "Color": {
-                        "start": [1.0, 1.0, 1.0, 1.0],
-                        "end": [1.0, 1.0, 1.0, 0.0]
-                    }
-                }
-            },
-            {
-                "id": "button_text",
-                "time_ms": 1.0,
-                "target": {
-                    "Color": {
-                        "start": [0.0, 0.0, 0.0, 1.0],
-                        "end": [1.0, 1.0, 1.0, 1.0]
-                    }
-                }
-            },
-            {
-                "id": "player_indicator",
-                "time_ms": 1.0,
-                "target": {
-                    "Color": {
-                        "start": [1.0, 1.0, 1.0, 1.0],
-                        "end": [1.0, 1.0, 1.0, 0.0]
-                    }
-                }
+        "button_selected": [
+          {
+            "timestamp_ms": 0,
+            "targets": {
+              "Color": [1.0, 1.0, 1.0, 1.0],
+              "Position": [0.0, -30.0]
             }
+          },
+          {
+            "timestamp_ms": 60,
+            "targets": {
+              "Position": [0.0, 0.0]
+            }
+          }
+        ],
+        "button_text": [
+          {
+            "timestamp_ms": 0,
+            "targets": {
+              "Color": [0.0, 0.0, 0.0, 1.0],
+              "Position": [116.0, -6.0]
+            }
+          },
+          {
+            "timestamp_ms": 60,
+            "targets": {
+              "Position": [116.0, 24.0]
+            }
+          }
+        ],
+        "player_indicator": [
+          {
+            "timestamp_ms": 0,
+            "targets": {
+              "Color": [1.0, 1.0, 1.0, 1.0],
+              "Position": [0.0, -30.0]
+            }
+          },
+          {
+            "timestamp_ms": 60,
+            "targets": {
+              "Position": [0.0, 0.0]
+            }
+          }
         ]
+      },
+      "unselect": {
+        "button_image": [
+          {
+            "timestamp_ms": 0,
+            "targets": {
+              "Color": [1.0, 1.0, 1.0, 1.0]
+            }
+          }
+        ],
+        "button_selected": [
+          {
+            "timestamp_ms": 0,
+            "targets": {
+              "Color": [1.0, 1.0, 1.0, 0.0]
+            }
+          }
+        ],
+        "button_text": [
+          {
+            "timestamp_ms": 0,
+            "targets": {
+              "Color": [1.0, 1.0, 1.0, 1.0]
+            }
+          }
+        ],
+        "player_indicator": [
+          {
+            "timestamp_ms": 0,
+            "targets": {
+              "Color": [1.0, 1.0, 1.0, 0.0]
+            }
+          }
+        ]
+      }
     }
 }

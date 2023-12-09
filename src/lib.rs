@@ -1,4 +1,4 @@
-use animation::{ColorAnimation, PositionAnimation, SizeAnimation};
+use animation::{DynamicAnimationTarget, LayoutAnimation, LayoutAnimationTarget, StaticTypeInfo};
 use asset::{Layout, LayoutLoader};
 use bevy::{
     app::App,
@@ -9,18 +9,20 @@ use bevy::{
     transform::TransformSystem,
     utils::HashMap,
 };
-use components::NodeKind;
+use builtin::{ColorAnimation, PositionAnimation, RotationAnimation, SizeAnimation};
+use components::{LoadedLayout, NodeKind};
 use input_detection::InputDetection;
 use node::LayoutInfo;
 use serde::de::DeserializeOwned;
 use std::{
-    any::Any,
+    any::TypeId,
     sync::{Arc, RwLock},
 };
-use views::{NodeViewMut, NodeWorldViewMut};
+use views::NodeEntityMut;
 
 pub mod animation;
 pub mod asset;
+pub mod builtin;
 pub mod components;
 pub mod input_detection;
 pub mod node;
@@ -28,141 +30,103 @@ pub mod views;
 
 pub use components::{ActiveLayout, LayoutBundle, LayoutId, LayoutNodeId};
 
-#[derive(TypePath)]
 pub struct DynamicAttribute {
-    name: String,
+    type_info: StaticTypeInfo,
     data: *mut (),
-    as_any: fn(*const ()) -> *const dyn Any,
-    as_any_mut: fn(*mut ()) -> *mut dyn Any,
-    as_layout_attribute: fn(*const ()) -> *const dyn LayoutAttribute,
-    as_layout_attribute_mut: fn(*mut ()) -> *mut dyn LayoutAttribute,
+    // SAFETY: The caller must ensure that the data provided to this function via pointer
+    //          is the same type as what was used to create the function
+    apply: unsafe fn(*const (), NodeEntityMut),
+    // SAFETY: The caller must ensure that the data provided to this function via pointer
+    //          is the same type as what was used to create the function, and also that it has an
+    //          exclusive reference on the data passed in
+    initialize_dependencies: unsafe fn(*mut (), &mut RestrictedLoadContext),
+    // SAFETY: The caller must ensure that the data provided to this function via pointer
+    //          is the same type as what was used to create the function
+    visit_dependencies: unsafe fn(*const (), &mut dyn FnMut(UntypedAssetId)),
 }
 
 unsafe impl Send for DynamicAttribute {}
 unsafe impl Sync for DynamicAttribute {}
 
-#[derive(TypePath)]
-pub struct DynamicAnimationTarget {
-    name: String,
-    data: *mut (),
-    as_any: fn(*const ()) -> *const dyn Any,
-    as_any_mut: fn(*mut ()) -> *mut dyn Any,
-    as_layout_animation_target: fn(*const ()) -> *const dyn LayoutAnimationTarget,
-    as_layout_animation_target_mut: fn(*mut ()) -> *mut dyn LayoutAnimationTarget,
-}
-
-unsafe impl Send for DynamicAnimationTarget {}
-unsafe impl Sync for DynamicAnimationTarget {}
-
 impl DynamicAttribute {
-    pub fn new<T: LayoutAttribute + Sized>(value: T, name: String) -> Self {
+    pub(crate) fn new<T: LayoutAttribute>(data: T) -> Self {
         Self {
-            name,
-            data: (Box::leak(Box::new(value)) as *mut T).cast(),
-            as_any: |ptr| ptr.cast::<T>() as *const dyn Any,
-            as_any_mut: |ptr| ptr.cast::<T>() as *mut dyn Any,
-            as_layout_attribute: |ptr| ptr.cast::<T>() as *const dyn LayoutAttribute,
-            as_layout_attribute_mut: |ptr| ptr.cast::<T>() as *mut dyn LayoutAttribute,
+            type_info: StaticTypeInfo {
+                name: T::NAME,
+                type_path: T::short_type_path(),
+                type_id: TypeId::of::<T>(),
+            },
+            data: (Box::leak(Box::new(data)) as *mut T).cast(),
+            // We cannot create unsafe closures, but this gets coerced from {{closure}} -> fn(...)
+            // -> unsafe fn(...)
+            apply: |data, node| unsafe {
+                let data = &*data.cast::<T>();
+                data.apply(node)
+            },
+            initialize_dependencies: |data, context| unsafe {
+                let data = &mut *data.cast::<T>();
+                data.initialize_dependencies(context)
+            },
+            visit_dependencies: |data, visit_fn| unsafe {
+                let data = &*data.cast::<T>();
+                data.visit_dependencies(visit_fn)
+            },
         }
     }
 
     pub fn name(&self) -> &str {
-        self.name.as_str()
+        self.type_info.name
     }
 
-    pub fn as_any(&self) -> &dyn Any {
-        unsafe { &*(self.as_any)(self.data) }
+    pub fn attribute_type_id(&self) -> TypeId {
+        self.type_info.type_id
     }
 
-    pub fn as_any_mut(&mut self) -> &mut dyn Any {
-        unsafe { &mut *(self.as_any_mut)(self.data) }
+    pub fn attribute_type_path(&self) -> &str {
+        self.type_info.type_path
     }
 
-    pub fn as_layout_attribute(&self) -> &dyn LayoutAttribute {
-        unsafe { &*(self.as_layout_attribute)(self.data) }
+    pub fn apply(&self, node: NodeEntityMut) {
+        // SAFETY: We are using the data that we created when we made this object, so it will be
+        // the same type
+        unsafe { (self.apply)(self.data, node) }
     }
 
-    pub fn as_layout_attribute_mut(&mut self) -> &mut dyn LayoutAttribute {
-        unsafe { &mut *(self.as_layout_attribute_mut)(self.data) }
-    }
-}
-
-impl DynamicAnimationTarget {
-    pub fn new<T: LayoutAnimationTarget + Sized>(value: T, name: String) -> Self {
-        Self {
-            name,
-            data: (Box::leak(Box::new(value)) as *mut T).cast(),
-            as_any: |ptr| ptr.cast::<T>() as *const dyn Any,
-            as_any_mut: |ptr| ptr.cast::<T>() as *mut dyn Any,
-            as_layout_animation_target: |ptr| ptr.cast::<T>() as *const dyn LayoutAnimationTarget,
-            as_layout_animation_target_mut: |ptr| ptr.cast::<T>() as *mut dyn LayoutAnimationTarget,
-        }
+    pub fn initialize_dependencies(&mut self, context: &mut RestrictedLoadContext) {
+        // SAFETY: We are using the data that we created when we made this object, so it will be
+        // the same type. We also require an exclusive reference to call this method, so we are
+        // good there
+        unsafe { (self.initialize_dependencies)(self.data, context) }
     }
 
-    pub fn name(&self) -> &str {
-        self.name.as_str()
-    }
-
-    pub fn as_any(&self) -> &dyn Any {
-        unsafe { &*(self.as_any)(self.data) }
-    }
-
-    pub fn as_any_mut(&mut self) -> &mut dyn Any {
-        unsafe { &mut *(self.as_any_mut)(self.data) }
-    }
-
-    pub fn as_layout_animation_target(&self) -> &dyn LayoutAnimationTarget {
-        unsafe { &*(self.as_layout_animation_target)(self.data) }
-    }
-
-    pub fn as_layout_animation_target_mut(&mut self) -> &mut dyn LayoutAnimationTarget {
-        unsafe { &mut *(self.as_layout_animation_target_mut)(self.data) }
-    }
-}
-
-impl Drop for DynamicAttribute {
-    fn drop(&mut self) {
-        // SAFETY: We own the memory here and we box it before allocating and storing it
-        unsafe { drop(Box::from_raw(self.data)) }
-    }
-}
-
-impl Drop for DynamicAnimationTarget {
-    fn drop(&mut self) {
-        // SAFETY: We own the memory here and we box it before allocating and storing it
-        unsafe { drop(Box::from_raw(self.data)) }
+    pub fn visit_dependencies(&self, visit_fn: &mut dyn FnMut(UntypedAssetId)) {
+        // SAFETY: See same safety comments as above
+        unsafe { (self.visit_dependencies)(self.data, visit_fn) }
     }
 }
 
 /// Manages registered deserialization methods for attributes
 pub(crate) struct RegisteredAttributeData {
-    deserialize:
-        fn(serde_value::Value, String) -> Result<DynamicAttribute, serde_value::DeserializerError>,
+    deserialize: fn(serde_value::Value) -> Result<DynamicAttribute, serde_value::DeserializerError>,
 }
 
 /// Manages registered deserialization methods for animations
 pub(crate) struct RegisteredAnimationData {
-    deserialize: fn(
-        serde_value::Value,
-        String,
-    ) -> Result<DynamicAnimationTarget, serde_value::DeserializerError>,
+    deserialize:
+        fn(serde_value::Value) -> Result<DynamicAnimationTarget, serde_value::DeserializerError>,
 }
 
 /// Internal registry of layout animations/attributes
 ///
 /// This is internal to yabuil, and external users should rely on [`LayoutRegistry`]
 pub(crate) struct LayoutRegistryInner {
-    pub(crate) ignore_unregistered_attributes: bool,
-    pub(crate) ignore_unregistered_animations: bool,
     pub(crate) attributes: HashMap<String, RegisteredAttributeData>,
     pub(crate) animations: HashMap<String, RegisteredAnimationData>,
 }
 
 impl LayoutRegistryInner {
-    pub fn new(ignore_attributes: bool, ignore_animations: bool) -> Self {
+    pub fn new() -> Self {
         Self {
-            ignore_unregistered_animations: ignore_animations,
-            ignore_unregistered_attributes: ignore_attributes,
             animations: Default::default(),
             attributes: Default::default(),
         }
@@ -183,12 +147,9 @@ pub struct LayoutRegistry {
 }
 
 impl LayoutRegistry {
-    pub(crate) fn new(ignore_attributes: bool, ignore_animations: bool) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            inner: Arc::new(RwLock::new(LayoutRegistryInner::new(
-                ignore_attributes,
-                ignore_animations,
-            ))),
+            inner: Arc::new(RwLock::new(LayoutRegistryInner::new())),
         }
     }
 }
@@ -201,15 +162,15 @@ impl LayoutRegistry {
     /// an error in the deserializer and the asset will fail to load.
     ///
     /// For more information, see the [`LayoutAttribute`] trait.
-    pub fn register_attribute<A: LayoutAttribute + DeserializeOwned>(&self, name: impl ToString) {
+    pub fn register_attribute<A: LayoutAttribute + DeserializeOwned>(&self) {
         self.inner.write().unwrap().attributes.insert(
-            name.to_string(),
+            A::NAME.to_string(),
             RegisteredAttributeData {
-                deserialize: |value, name| {
+                deserialize: |value| {
                     A::deserialize(serde_value::ValueDeserializer::<
                         serde_value::DeserializerError,
                     >::new(value))
-                    .map(|v| DynamicAttribute::new(v, name.clone()))
+                    .map(|v| DynamicAttribute::new(v))
                 },
             },
         );
@@ -222,19 +183,15 @@ impl LayoutRegistry {
     /// an error in the deserializer and the asset will fail to load.
     ///
     /// For more information, see the [`LayoutAnimation`] trait.
-    pub fn register_animation<A: LayoutAnimationTarget + DeserializeOwned>(
-        &self,
-        name: impl ToString,
-    ) {
-        let name = name.to_string();
+    pub fn register_animation<A: LayoutAnimationTarget + DeserializeOwned>(&self) {
         self.inner.write().unwrap().animations.insert(
-            name.clone(),
+            A::NAME.to_string(),
             RegisteredAnimationData {
-                deserialize: |value, name| {
+                deserialize: |value| {
                     A::deserialize(serde_value::ValueDeserializer::<
                         serde_value::DeserializerError,
                     >::new(value))
-                    .map(|v| DynamicAnimationTarget::new(v, name))
+                    .map(|v| DynamicAnimationTarget::new(v))
                 },
             },
         );
@@ -281,26 +238,23 @@ pub enum LayoutSystems {
     /// Any changes to [`Nodes`](node::Node) that take place before the [`PostUpdate`] schedule,
     /// as well as during [`PostUpdate`] but before this system, will be represented.
     PropagateToTransforms,
+
+    AnimateLayouts,
 }
 
 /// Plugin to add to an [`App`] that enables support for yabuil layouts
 #[derive(Default)]
-pub struct LayoutPlugin {
-    pub ignore_unregistered_attributes: bool,
-    pub ignore_unregistered_animations: bool,
-}
+pub struct LayoutPlugin {}
 
 impl Plugin for LayoutPlugin {
     fn build(&self, app: &mut App) {
-        let registry = LayoutRegistry::new(
-            self.ignore_unregistered_attributes,
-            self.ignore_unregistered_animations,
-        );
+        let registry = LayoutRegistry::new();
 
-        registry.register_attribute::<InputDetection>("InputDetection");
-        registry.register_animation::<PositionAnimation>("Position");
-        registry.register_animation::<SizeAnimation>("Size");
-        registry.register_animation::<ColorAnimation>("Color");
+        registry.register_attribute::<InputDetection>();
+        registry.register_animation::<PositionAnimation>();
+        registry.register_animation::<SizeAnimation>();
+        registry.register_animation::<ColorAnimation>();
+        registry.register_animation::<RotationAnimation>();
 
         // Register the types so that they can be used in reflection (also debugging with bevy_inspector_egui)
         app.register_type::<node::Node>()
@@ -312,20 +266,25 @@ impl Plugin for LayoutPlugin {
             .register_type::<PositionAnimation>()
             .register_type::<SizeAnimation>()
             .register_type::<ColorAnimation>()
-            .register_type::<InputDetection>();
+            .register_type::<RotationAnimation>()
+            .register_type::<InputDetection>()
+            .add_event::<LoadedLayout>();
 
         // Register the asset/asset loader
         app.register_asset_loader(LayoutLoader(registry.inner.clone()))
             .insert_resource(registry)
-            .init_asset::<Layout>();
+            .init_asset::<Layout>()
+            .init_asset::<LayoutAnimation>();
 
         app.add_systems(
             Update,
             (
                 components::spawn_layout_system,
+                bevy::ecs::schedule::apply_deferred,
                 input_detection::update_input_detection_nodes,
-                animation::update_ui_layout_animations,
-            ),
+                animation::update_animations.in_set(LayoutSystems::AnimateLayouts),
+            )
+                .chain(),
         )
         .add_systems(
             PostUpdate,
@@ -342,9 +301,11 @@ impl Plugin for LayoutPlugin {
 }
 
 /// A trait for arbitrary entity mutations to be applied to layouts
-pub trait LayoutAttribute: Send + Sync + 'static {
+pub trait LayoutAttribute: TypePath + Send + Sync + 'static {
+    const NAME: &'static str;
+
     /// Runs whenever a node that has this attribute gets spawned into the ECS world
-    fn apply(&self, world: &mut NodeWorldViewMut);
+    fn apply(&self, world: NodeEntityMut);
 
     /// Runs during asset loading to help ensure that the [recursive load state](bevy::asset::RecursiveDependencyLoadState)
     /// is accurate and reflects the state of all attributes
@@ -353,69 +314,32 @@ pub trait LayoutAttribute: Send + Sync + 'static {
 
     /// Used to help ensure that the [recursive load state](bevy::asset::RecursiveDependencyLoadState)
     /// is accurate and reflects the state of all attributes
-    #[allow(unused_variables)]
-    fn visit_dependencies(&self, visit_fn: &mut dyn FnMut(UntypedAssetId)) {}
-}
-
-/// A trait for arbitrary entity animations to be applied to nodes
-pub trait LayoutAnimationTarget: Send + Sync + 'static {
-    /// Runs when the animation is playing.
-    ///
-    /// # Parameters
-    /// - `node` is the node that is being animated with this target.
-    /// - `interpolation` is the progress of the animation, where `0.0`
-    ///     should act as if the animation is at the beginning and `1.0`
-    ///     should act as if the animation is at the end. The actual value
-    ///     can be outside of the range `[0.0, 1.0]` depending on the time scale
-    ///     of the animation
-    ///
-    /// # Note
-    /// Unlike [`LayoutAttribute::apply`], this method takes a [`NodeViewMut`] instead of a
-    /// [`NodeWorldViewMut`], which means that you can reference and mutate the nodes however
-    /// you cannot add/remove components, despawn, etc.
-    fn interpolate(&self, node: &mut NodeViewMut, interpolation: f32);
-
-    /// Runs during asset loading to help ensure that the [recursive load state](bevy::asset::RecursiveDependencyLoadState)
-    /// is accurate and reflects the state of all animations
-    #[allow(unused_variables)]
-    fn initialize_dependencies(&mut self, context: &mut RestrictedLoadContext) {}
-
-    /// Used to help ensure that the [recursive load state](bevy::asset::RecursiveDependencyLoadState)
-    /// is accurate and reflects the state of all animations
     #[allow(unused_variables)]
     fn visit_dependencies(&self, visit_fn: &mut dyn FnMut(UntypedAssetId)) {}
 }
 
 pub trait LayoutApp {
-    fn register_layout_attribute<A: LayoutAttribute + DeserializeOwned>(
-        &mut self,
-        name: impl ToString,
-    ) -> &mut Self;
+    fn register_layout_attribute<A: LayoutAttribute + DeserializeOwned>(&mut self) -> &mut Self;
 
     fn register_layout_animation<A: LayoutAnimationTarget + DeserializeOwned>(
         &mut self,
-        name: impl ToString,
     ) -> &mut Self;
 }
 
 impl LayoutApp for App {
-    fn register_layout_attribute<A: LayoutAttribute + DeserializeOwned>(
-        &mut self,
-        name: impl ToString,
-    ) -> &mut Self {
+    fn register_layout_attribute<A: LayoutAttribute + DeserializeOwned>(&mut self) -> &mut Self {
         self.world
             .resource::<LayoutRegistry>()
-            .register_attribute::<A>(name);
+            .register_attribute::<A>();
         self
     }
 
     fn register_layout_animation<A: LayoutAnimationTarget + DeserializeOwned>(
         &mut self,
-        name: impl ToString,
     ) -> &mut Self {
         self.world
             .resource::<LayoutRegistry>()
-            .register_animation::<A>(name);
+            .register_animation::<A>();
         self
     }
 }

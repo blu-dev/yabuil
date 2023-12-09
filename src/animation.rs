@@ -1,16 +1,19 @@
-use std::{
-    hint::unreachable_unchecked,
-    path::Path,
-    sync::{Arc, RwLock},
-};
+use std::any::TypeId;
 
-use bevy::{ecs::query::WorldQuery, prelude::*};
-use indexmap::IndexMap;
+use bevy::{prelude::*, utils::hashbrown::HashMap};
+use camino::{Utf8Path, Utf8PathBuf};
 
-use crate::{views::NodeViewMut, DynamicAnimationTarget, LayoutAnimationTarget, LayoutNodeId};
+use crate::{node::LayoutHandle, LayoutNodeId};
+
 use serde::{Deserialize, Serialize};
 
-#[derive(Default, Deserialize, Serialize)]
+pub(crate) struct StaticTypeInfo {
+    pub name: &'static str,
+    pub type_path: &'static str,
+    pub type_id: TypeId,
+}
+
+#[derive(Default, Deserialize, Serialize, Copy, Clone)]
 pub enum TimeBezierCurve {
     #[default]
     Linear,
@@ -37,159 +40,578 @@ impl TimeBezierCurve {
     }
 }
 
-pub struct NodeAnimation {
-    pub id: String,
-    pub time_ms: f32,
+pub struct DynamicAnimationTarget {
+    type_info: StaticTypeInfo,
+    data: *mut (),
+    // SAFETY: The caller must ensure that the type of data being passed into BOTH parameters
+    //          is the same type that created this animation node.
+    interpolate: unsafe fn(*const (), Option<*const ()>, EntityMut, f32),
+}
+
+unsafe impl Send for DynamicAnimationTarget {}
+unsafe impl Sync for DynamicAnimationTarget {}
+
+impl DynamicAnimationTarget {
+    pub(crate) fn new<T: LayoutAnimationTarget>(data: T) -> Self {
+        Self {
+            type_info: StaticTypeInfo {
+                name: T::NAME,
+                type_path: T::short_type_path(),
+                type_id: TypeId::of::<T>(),
+            },
+            data: (Box::leak(Box::new(data)) as *mut T).cast::<()>(),
+            // We cannot create an unsafe closure, but this is good enough for our purposes since
+            // we are coallescing it into an unsafe function pointer
+            interpolate: |current, prev, node, progress| unsafe {
+                let current = &*current.cast::<T>();
+                let prev = prev.map(|prev| &*prev.cast::<T>());
+                current.interpolate(prev, node, progress);
+            },
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        self.type_info.name.as_ref()
+    }
+
+    pub fn target_type_path(&self) -> &str {
+        self.type_info.type_path
+    }
+
+    pub fn target_type_id(&self) -> TypeId {
+        self.type_info.type_id
+    }
+
+    pub fn is_type<T: 'static>(&self) -> bool {
+        self.type_info.type_id == TypeId::of::<T>()
+    }
+
+    pub fn interpolate_from_start(&self, node: EntityMut, progress: f32) {
+        // SAFETY: we are providing the owned pointer that we created ont ype construction, it is
+        // going to be the same type
+        unsafe { (self.interpolate)(self.data, None, node, progress) }
+    }
+
+    pub fn interpolate_with_previous(
+        &self,
+        previous: &DynamicAnimationTarget,
+        node: EntityMut,
+        progress: f32,
+    ) {
+        #[inline(never)]
+        #[cold]
+        fn panic_wrong_type(got: &'static str, expected: &'static str) {
+            panic!("Attempting to interpolate incorrect type. Expected type {expected}, got type {got}");
+        }
+
+        if self.type_info.type_id != previous.type_info.type_id {
+            panic_wrong_type(self.type_info.type_path, self.type_info.type_path);
+        }
+
+        // SAFETY: we have ensured that the type T is the same type that is used to represent
+        // this target
+        unsafe {
+            (self.interpolate)(self.data, Some(previous.data), node, progress);
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn interpolate<T: TypePath + 'static>(
+        &self,
+        previous: Option<&T>,
+        node: EntityMut,
+        progress: f32,
+    ) {
+        #[inline(never)]
+        #[cold]
+        fn panic_wrong_type(got: &'static str, expected: &'static str) {
+            panic!("Attempting to interpolate incorrect type. Expected type {expected}, got type {got}");
+        }
+
+        if TypeId::of::<T>() != self.type_info.type_id {
+            panic_wrong_type(T::short_type_path(), self.type_info.type_path);
+        }
+
+        // SAFETY: we have ensured that the type T is the same type that is used to represent
+        // this target
+        unsafe {
+            (self.interpolate)(
+                self.data,
+                previous.map(|prev| (prev as *const T).cast()),
+                node,
+                progress,
+            );
+        }
+    }
+}
+
+pub struct RawKeyframe {
+    pub timestamp_ms: usize,
+    pub time_scale: TimeBezierCurve,
+    pub targets: Vec<DynamicAnimationTarget>,
+}
+
+pub struct Keyframe {
+    pub timestamp_ms: usize,
     pub time_scale: TimeBezierCurve,
     pub target: DynamicAnimationTarget,
 }
 
-#[derive(Clone, Component, Default, Deref, DerefMut)]
-pub struct Animations(pub Arc<RwLock<IndexMap<String, Vec<NodeAnimation>>>>);
+pub struct KeyframeChannel {
+    pub type_id: TypeId,
+    pub keyframes: Vec<Keyframe>,
+}
+
+pub struct Keyframes {
+    max_length: usize,
+    channels: Vec<KeyframeChannel>,
+}
+
+impl Keyframes {
+    /// Flattens a list of keyframes into individual channels based off of their type id
+    ///
+    /// This can be used to more efficiently animate each target during the animation systems
+    pub(crate) fn flatten_raw_keyframes(keyframes: Vec<RawKeyframe>) -> Self {
+        let mut map_of_targets: HashMap<TypeId, Vec<Keyframe>> = HashMap::new();
+        for keyframe in keyframes {
+            for target in keyframe.targets {
+                map_of_targets
+                    .entry(target.target_type_id())
+                    .or_default()
+                    .push(Keyframe {
+                        timestamp_ms: keyframe.timestamp_ms,
+                        time_scale: keyframe.time_scale,
+                        target,
+                    });
+            }
+        }
+
+        let channels: Vec<_> = map_of_targets
+            .into_iter()
+            .map(|(type_id, mut list)| {
+                list.sort_by_key(|kf| kf.timestamp_ms);
+                KeyframeChannel {
+                    type_id,
+                    keyframes: list,
+                }
+            })
+            .collect();
+
+        let max_length = channels
+            .iter()
+            .map(|channel| {
+                channel
+                    .keyframes
+                    .last()
+                    .expect("should be at least one keyframe")
+                    .timestamp_ms
+            })
+            .max()
+            .unwrap_or_default();
+
+        Self {
+            max_length,
+            channels,
+        }
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct RawLayoutAnimations(
+    pub(crate) HashMap<String, HashMap<String, Vec<RawKeyframe>>>,
+);
+
+/// An asset type for a layout animation
+///
+/// Layout animations are loaded as labeled assets on an animation.
+#[derive(Asset, Deref, DerefMut, TypePath)]
+pub struct LayoutAnimation(pub(crate) HashMap<Utf8PathBuf, Keyframes>);
+
+pub trait LayoutAnimationTarget: TypePath + Send + Sync + 'static {
+    const NAME: &'static str;
+
+    fn interpolate(&self, previous: Option<&Self>, node: EntityMut, progress: f32);
+}
+
+#[derive(Debug)]
+enum InternalPlaybackState {
+    Stopped,
+    Paused { progress: usize, is_reverse: bool },
+    Playing { progress: usize, is_reverse: bool },
+}
+
+pub enum PlaybackState {
+    Stopped,
+    Paused,
+    Playing,
+}
+
+impl PlaybackState {
+    fn from_internal(internal: &InternalPlaybackState) -> Self {
+        match internal {
+            InternalPlaybackState::Stopped => Self::Stopped,
+            InternalPlaybackState::Paused { .. } => Self::Paused,
+            InternalPlaybackState::Playing { .. } => Self::Playing,
+        }
+    }
+}
 
 #[derive(Component, Default)]
-pub(crate) enum AnimationPlayerState {
-    #[default]
-    NotPlaying,
-    Playing {
-        animation: String,
-        time_elapsed_ms: f32,
-    },
-}
+pub struct LayoutAnimationPlaybackState(HashMap<String, InternalPlaybackState>);
 
-impl AnimationPlayerState {
-    fn is_playing(&self) -> bool {
-        matches!(self, Self::Playing { .. })
+impl LayoutAnimationPlaybackState {
+    pub(crate) fn new(
+        asset_server: &AssetServer,
+        handles: impl Iterator<Item = AssetId<LayoutAnimation>>,
+    ) -> Self {
+        let mut map = HashMap::new();
+        for handle in handles {
+            let path = asset_server
+                .get_path(handle)
+                .expect("handle for id should be present when building playback state");
+            let label = path.label().expect("handle should have a label");
+            map.insert(label.to_string(), InternalPlaybackState::Stopped);
+        }
+
+        Self(map)
+    }
+
+    pub fn is_playing_any(&self) -> bool {
+        self.0
+            .values()
+            .any(|state| matches!(state, InternalPlaybackState::Playing { .. }))
+    }
+
+    pub fn playback_state(&self, name: &str) -> Option<PlaybackState> {
+        self.0.get(name).map(PlaybackState::from_internal)
+    }
+
+    pub fn play_animation(&mut self, name: &str) -> bool {
+        if let Some(state) = self.0.get_mut(name) {
+            *state = InternalPlaybackState::Playing {
+                progress: 0,
+                is_reverse: false,
+            };
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn pause_animation(&mut self, name: &str) -> bool {
+        if let Some(state) = self.0.get_mut(name) {
+            match state {
+                InternalPlaybackState::Playing {
+                    progress,
+                    is_reverse,
+                } => {
+                    *state = InternalPlaybackState::Paused {
+                        progress: *progress,
+                        is_reverse: *is_reverse,
+                    }
+                }
+                _ => {}
+            }
+
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn pause_all_animations(&mut self) {
+        for state in self.0.values_mut() {
+            match state {
+                InternalPlaybackState::Playing {
+                    progress,
+                    is_reverse,
+                } => {
+                    *state = InternalPlaybackState::Paused {
+                        progress: *progress,
+                        is_reverse: *is_reverse,
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pub fn resume_animation(&mut self, name: &str) -> bool {
+        if let Some(state) = self.0.get_mut(name) {
+            match state {
+                InternalPlaybackState::Paused {
+                    progress,
+                    is_reverse,
+                } => {
+                    *state = InternalPlaybackState::Playing {
+                        progress: *progress,
+                        is_reverse: *is_reverse,
+                    }
+                }
+                _ => {}
+            }
+
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn resume_all_animations(&mut self) {
+        for state in self.0.values_mut() {
+            match state {
+                InternalPlaybackState::Paused {
+                    progress,
+                    is_reverse,
+                } => {
+                    *state = InternalPlaybackState::Playing {
+                        progress: *progress,
+                        is_reverse: *is_reverse,
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pub fn reverse_animation(&mut self, name: &str) -> bool {
+        if let Some(state) = self.0.get_mut(name) {
+            match state {
+                InternalPlaybackState::Paused { is_reverse, .. }
+                | InternalPlaybackState::Playing { is_reverse, .. } => {
+                    *is_reverse = true;
+                }
+                _ => {}
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn play_or_reverse_animation(&mut self, name: &str) -> bool {
+        if let Some(state) = self.0.get_mut(name) {
+            match state {
+                InternalPlaybackState::Paused { is_reverse, .. }
+                | InternalPlaybackState::Playing { is_reverse, .. } => {
+                    *is_reverse = !*is_reverse;
+                }
+                InternalPlaybackState::Stopped => {
+                    *state = InternalPlaybackState::Playing {
+                        progress: usize::MAX,
+                        is_reverse: true,
+                    };
+                }
+            }
+            true
+        } else {
+            false
+        }
     }
 }
 
-#[derive(WorldQuery)]
-#[world_query(mutable)]
-struct SomeQuery {
-    item: &'static Children,
-    other_item: &'static mut AnimationPlayerState,
+type IsLayoutNodeFilter = (With<LayoutAnimationPlaybackState>, With<LayoutHandle>);
+
+enum DescendantId {
+    None,
+    This,
+    Other(Entity),
 }
 
-pub(crate) fn update_ui_layout_animations(
-    mut disjoint: ParamSet<(Res<Time>, Query<EntityMut<'_>, With<crate::node::Node>>)>,
-) {
-    let delta = disjoint.p0().delta_seconds() * 1000.0;
-    let query = disjoint.p1();
-    // SAFETY: This is safe because we are still only accessing one entity at a time
-    // (see safety comments below)
-    for mut entity in unsafe { query.iter_unsafe() } {
-        let Some(mut state) = entity.get_mut::<AnimationPlayerState>() else {
-            continue;
+/// Gets the ID of the descendant referenced by the path
+///
+/// If the path is empty, and contains no components, this will return the ID of the entity
+/// that was passed in
+fn try_get_descendant_id(world: &World, entity: EntityRef<'_>, id: &Utf8Path) -> DescendantId {
+    let start_id = entity.id();
+    let mut current = start_id;
+    'search: for expecting in id.iter() {
+        let entity = world.entity(current);
+        let Some(children) = entity.get::<Children>() else {
+            log::warn!("Entity {current:?} does not have any children");
+            return DescendantId::None;
         };
 
-        if !state.is_playing() {
-            continue;
+        for child_id in children.iter().copied() {
+            let child = world.entity(child_id);
+            let Some(layout_id) = child.get::<LayoutNodeId>() else {
+                log::trace!("Entity {child_id:?} is in the layout tree but has no LayoutNodeId");
+                continue;
+            };
+
+            if expecting == layout_id.name() {
+                current = child_id;
+                continue 'search;
+            }
         }
 
-        let mut state = std::mem::take(&mut *state);
+        log::error!("Entity {current:?} did not have a child by the name of '{expecting}'");
+        return DescendantId::None;
+    }
 
-        let AnimationPlayerState::Playing {
-            animation,
-            time_elapsed_ms,
-        } = &mut state
-        else {
-            // SAFETY: we ensure above
-            unsafe { unreachable_unchecked() }
-        };
+    if start_id == current {
+        DescendantId::This
+    } else {
+        DescendantId::Other(current)
+    }
+}
 
-        let mut is_finished = true;
-        *time_elapsed_ms += delta;
-        let progress = *time_elapsed_ms;
+pub(crate) fn update_animations(world: &mut World) {
+    let delta_ms = world.resource::<Time>().delta().as_millis();
+    let asset_server = world.resource::<AssetServer>().clone();
 
-        let anims = entity.get::<Animations>().unwrap().clone();
+    world.resource_scope::<Assets<LayoutAnimation>, _>(move |world, animations| {
+        let mut query = world.query_filtered::<EntityMut, IsLayoutNodeFilter>();
 
-        if let Some(animation) = anims.0.read().unwrap().get(animation.as_str()) {
-            'outer: for animation in animation.iter() {
-                let mut entity = entity.reborrow();
-                'id_search: for id in Path::new(animation.id.as_str()).components() {
-                    let id = id.as_os_str().to_str().unwrap();
-                    let children = entity.get::<Children>().unwrap();
-                    for child in children.iter().copied() {
-                        // SAFETY: This is safe because we are iterating over the components serially
-                        //          and therefore we won't be holding a reference to any of the children
-                        let child = unsafe { query.get_unchecked(child).unwrap() };
+        let world = world.as_unsafe_world_cell();
 
-                        let node_id = child.get::<LayoutNodeId>().unwrap();
-                        if node_id.name() == id {
-                            entity = child;
-                            continue 'id_search;
+        // SAFETY: This is going to be safe because we are only going to get the EntityMut of
+        // descendants of a node while it is getting accessed
+        unsafe { query.iter_unchecked(world) }.for_each(|mut entity| {
+            // SAFETY: We ensure via the query filter that this entity has a LayoutHandle
+            let layout_handle_id =
+                unsafe { entity.get::<LayoutHandle>().unwrap_unchecked().0.id() };
+
+            let Some(path) = asset_server.get_path(layout_handle_id).map(|path| path.into_owned()) else {
+                log::warn!(
+                    "Failed to get asset path for loaded layout with id {:?}",
+                    layout_handle_id
+                );
+                return;
+            };
+
+            let mut state = std::mem::take(
+                // SAFETY: We ensure via the query filter that this entity has
+                // LayoutAnimationPlaybackState
+                unsafe {
+                    entity
+                        .get_mut::<LayoutAnimationPlaybackState>()
+                        .unwrap_unchecked()
+                        .bypass_change_detection() // We bypass change detection here in case
+                                                   // we don't end up updating it
+                },
+            );
+
+            let mut changed = false;
+            for (name, state) in state.0.iter_mut() {
+                let InternalPlaybackState::Playing {
+                    progress,
+                    is_reverse,
+                } = state
+                else {
+                    continue;
+                };
+
+                let path = path.clone().with_label(name.clone());
+                let Some(animation_handle) = asset_server.get_handle::<LayoutAnimation>(&path)
+                else {
+                    log::warn!("Failed to get asset handle for layout animation '{path:?}'");
+                    continue;
+                };
+
+                let Some(animation) = animations.get(animation_handle) else {
+                    log::warn!("Failed to get layout animation data for '{path:?}");
+                    continue;
+                };
+
+                changed |= true;
+
+                if *progress == usize::MAX {
+                    *progress = animation.values().map(|kf| kf.max_length).max().unwrap_or_default();
+                }
+
+                if *is_reverse {
+                    // Performing an "as" conversion here is fine, if your game takes over
+                    // usize::MAX milliseconds you probably have other concerns than your
+                    // layouts animating
+                    *progress = progress.saturating_sub(delta_ms as usize);
+                } else {
+                    *progress = progress.saturating_add(delta_ms as usize);
+                }
+
+                let mut are_keyframes_finished = true;
+
+                for (node_id, keyframes) in animation.iter() {
+                    if keyframes.channels.is_empty() {
+                        log::error!("Keyframes should not be empty! This could be a hard error in the future");
+                        continue;
+                    }
+
+                    let readonly = entity.as_readonly();
+                    // SAFETY: This is safe since we remove the only other active mutable reference
+                    // into the world by making it readonly (we will use it as mutable again later
+                    // but for all intents and purposes this is safe)
+                    let mut entity = match try_get_descendant_id(unsafe { world.world() }, readonly, node_id) {
+                        DescendantId::None => continue, // We don't log anything because that's done in
+                                                        // the function
+                        DescendantId::This => entity.reborrow(),
+                        // SAFETY: This is safe since we have confirmed that it is not the same
+                        // entity (therefore no double mutable reference) and we are not iterating
+                        // in parallel so we have exclusive access to this entity
+                        DescendantId::Other(id) => unsafe { EntityMut::from(world.world_mut().entity_mut(id)) }
+                    };
+
+                    for channel in keyframes.channels.iter() {
+                        let index = if let Some(index) = channel.keyframes.iter().position(|kf| {
+                            *progress < kf.timestamp_ms
+                        }) {
+                            are_keyframes_finished = false;
+                            index
+                        } else {
+                            channel.keyframes.len() - 1 // we can safely subtract 1
+                                                        // since we check if it is empty
+                                                        // above
+                        };
+
+                        let kf = &channel.keyframes[index];
+                        log::trace!("Animating target {}", kf.target.name());
+                        // we are at the start of the animation, no prev keyframe
+                        // to interpolate frame
+                        if index == 0 {
+                            let progress = if kf.timestamp_ms == 0 {
+                                1.0
+                            } else {
+                                *progress as f32 / kf.timestamp_ms as f32
+                            };
+
+                            let progress = kf.time_scale.map(progress.clamp(0.0, 1.0));
+
+                            kf.target.interpolate_from_start(entity.reborrow(), progress);
+                        } else {
+                            let prev_kf = &channel.keyframes[index - 1];
+                            // doing a non saturating sub here is safe since we sort the 
+                            // keyframe list upon construction
+                            let delta_kf = kf.timestamp_ms - prev_kf.timestamp_ms; 
+                            let progress = if delta_kf == 0 {
+                                1.0
+                            } else {
+                                (*progress - prev_kf.timestamp_ms) as f32 / delta_kf as f32
+                            };
+
+                            let progress = kf.time_scale.map(progress.clamp(0.0, 1.0));
+
+                            kf.target.interpolate_with_previous(&prev_kf.target, entity.reborrow(), progress);
                         }
                     }
-                    log::warn!("Could not find node '{}' for animation", animation.id);
-                    continue 'outer;
                 }
-                is_finished &= progress >= animation.time_ms;
-                let interp = (progress / animation.time_ms).clamp(0.0, 1.0);
 
-                let mut node_view = NodeViewMut::new(entity).unwrap();
-
-                animation
-                    .target
-                    .as_layout_animation_target()
-                    .interpolate(&mut node_view, animation.time_scale.map(interp));
+                if are_keyframes_finished || (*is_reverse && *progress == 0) {
+                    *state = InternalPlaybackState::Stopped;
+                }
             }
-        } else {
-            log::warn!("Failed to get animation {} for node", animation);
-        }
+            // SAFETY: We ensure via the query filter that this entity has
+            // LayoutAnimationPlaybackState
+            let mut ref_state = unsafe {
+                entity
+                    .get_mut::<LayoutAnimationPlaybackState>()
+                    .unwrap_unchecked()
+            };
 
-        if is_finished {
-            state = AnimationPlayerState::NotPlaying;
-        }
+            *ref_state.bypass_change_detection() = state;
 
-        *entity.get_mut::<AnimationPlayerState>().unwrap() = state;
-    }
-}
-
-#[derive(Serialize, Deserialize, Reflect)]
-pub struct PositionAnimation {
-    pub start: Vec2,
-    pub end: Vec2,
-}
-
-#[derive(Serialize, Deserialize, Reflect)]
-pub struct SizeAnimation {
-    pub start: Vec2,
-    pub end: Vec2,
-}
-
-#[derive(Serialize, Deserialize, Reflect)]
-pub struct ColorAnimation {
-    #[serde(deserialize_with = "crate::asset::deserialize_color")]
-    start: Color,
-    #[serde(deserialize_with = "crate::asset::deserialize_color")]
-    end: Color,
-}
-
-impl LayoutAnimationTarget for PositionAnimation {
-    fn interpolate(&self, node: &mut NodeViewMut, interpolation: f32) {
-        node.node_mut().position = self.start * (1.0 - interpolation) + self.end * interpolation;
-    }
-}
-
-impl LayoutAnimationTarget for SizeAnimation {
-    fn interpolate(&self, node: &mut NodeViewMut, interpolation: f32) {
-        node.node_mut().size = self.start * (1.0 - interpolation) + self.end * interpolation;
-    }
-}
-
-impl LayoutAnimationTarget for ColorAnimation {
-    fn interpolate(&self, node: &mut NodeViewMut, interp: f32) {
-        let start_color = self.start.as_hsla();
-        let end_color = self.end.as_hsla();
-
-        let mut color = start_color * (1.0 - interp) + end_color * interp;
-
-        color.set_a(self.start.a() * (1.0 - interp) + self.end.a() * interp);
-
-        if let Some(mut node) = node.as_image_node_mut() {
-            node.update_sprite(|sprite| sprite.color = color);
-        } else if let Some(mut node) = node.as_text_node_mut() {
-            node.set_color(color);
-        }
-    }
+            if changed {
+                ref_state.set_changed();
+            }
+        });
+    });
 }

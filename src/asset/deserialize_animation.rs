@@ -1,265 +1,122 @@
-use std::{
-    marker::PhantomData,
-    sync::{Arc, RwLock},
-};
-
-use indexmap::IndexMap;
 use serde::{
     de::{DeserializeSeed, Visitor},
-    Deserialize,
+    Deserialize, Deserializer,
 };
+
+use std::marker::PhantomData;
 
 use crate::{
-    animation::{Animations, NodeAnimation, TimeBezierCurve},
-    DynamicAnimationTarget, LayoutRegistryInner,
+    animation::{DynamicAnimationTarget, RawKeyframe, RawLayoutAnimations, TimeBezierCurve},
+    LayoutRegistryInner,
 };
 
-use super::UnregisteredData;
+use super::helpers::{
+    decl_ident_parse, decl_struct_parse, HashMapSeedPassthrough, VecSeedPassthrough,
+};
 
-enum AnimationDataFieldId {
-    Id,
-    TimeMs,
-    TimeScale,
-    Target,
+decl_ident_parse!(
+    field RawKeyframe(TimestampMs, TimeScale, Targets)
+);
+
+pub(crate) struct RawLayoutAnimationsSeed<'de>(pub(crate) &'de LayoutRegistryInner);
+
+impl<'de> DeserializeSeed<'de> for RawLayoutAnimationsSeed<'de> {
+    type Value = RawLayoutAnimations;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let inner = deserializer.deserialize_map(HashMapSeedPassthrough::new(
+            HashMapSeedPassthrough::new(VecSeedPassthrough::new(RawKeyframeSeed(self.0))),
+        ))?;
+
+        Ok(RawLayoutAnimations(inner))
+    }
 }
 
-struct AnimationDataFieldIdVisitor;
+#[derive(Copy, Clone)]
+struct RawKeyframeSeed<'de>(&'de LayoutRegistryInner);
 
-impl<'de> Visitor<'de> for AnimationDataFieldIdVisitor {
-    type Value = AnimationDataFieldId;
+impl<'de> Visitor<'de> for RawKeyframeSeed<'de> {
+    type Value = RawKeyframe;
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-        formatter.write_str("field identifier")
-    }
-
-    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-    where
-        E: serde::de::Error,
-    {
-        match v {
-            "id" => Ok(AnimationDataFieldId::Id),
-            "time_ms" => Ok(AnimationDataFieldId::TimeMs),
-            "time_scale" => Ok(AnimationDataFieldId::TimeScale),
-            "target" => Ok(AnimationDataFieldId::Target),
-            _ => Err(<E as serde::de::Error>::unknown_field(
-                v,
-                &["id", "time_ms", "time_scale", "target"],
-            )),
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for AnimationDataFieldId {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        deserializer.deserialize_any(AnimationDataFieldIdVisitor)
-    }
-}
-
-struct TargetDeserializer<'de>(&'de LayoutRegistryInner);
-
-impl<'de> Visitor<'de> for TargetDeserializer<'de> {
-    type Value = DynamicAnimationTarget;
-    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-        formatter.write_str("registered layout animation")
+        formatter.write_str("struct RawKeyframe")
     }
 
     fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
     where
         A: serde::de::MapAccess<'de>,
     {
-        let key = map.next_key::<String>()?.ok_or_else(|| {
-            <A::Error as serde::de::Error>::custom("expected 1 key-value pair in the target map")
-        })?;
+        decl_struct_parse!(
+            self, RawKeyframeFieldId, map;
+            (timestamp_ms => usize),
+            (time_scale => TimeBezierCurve),
+            (passthrough targets => TargetListSeed);
+            require(timestamp_ms, targets);
+            default(time_scale)
+        );
 
-        match self.0.animations.get(key.as_str()) {
-            Some(data) => {
-                let content = map.next_value::<serde_value::Value>()?;
-
-                (data.deserialize)(content, key)
-                    .map_err(|e| <A::Error as serde::de::Error>::custom(e))
-            }
-            None if self.0.ignore_unregistered_animations => {
-                let value = map.next_value::<serde_json::Value>()?;
-
-                Ok(DynamicAnimationTarget::new(
-                    UnregisteredData {
-                        name: key.clone(),
-                        value,
-                    },
-                    key,
-                ))
-            }
-            None => Err(<A::Error as serde::de::Error>::custom(format!(
-                "Layout animation '{key}' was not registered"
-            ))),
-        }
+        Ok(Self::Value {
+            timestamp_ms,
+            time_scale,
+            targets,
+        })
     }
 }
 
-impl<'de> DeserializeSeed<'de> for TargetDeserializer<'de> {
-    type Value = DynamicAnimationTarget;
-
+impl<'de> DeserializeSeed<'de> for RawKeyframeSeed<'de> {
+    type Value = RawKeyframe;
     fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
     where
-        D: serde::Deserializer<'de>,
+        D: Deserializer<'de>,
     {
         deserializer.deserialize_map(self)
     }
 }
 
-struct NodeAnimationVisitor<'de>(&'de LayoutRegistryInner);
+struct TargetListSeed<'de>(&'de LayoutRegistryInner);
 
-impl<'de> Visitor<'de> for NodeAnimationVisitor<'de> {
-    type Value = NodeAnimation;
+impl<'de> Visitor<'de> for TargetListSeed<'de> {
+    type Value = Vec<DynamicAnimationTarget>;
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-        formatter.write_str("struct NodeAnimation")
+        formatter.write_str("map of LayoutAnimationTarget")
     }
 
     fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
     where
         A: serde::de::MapAccess<'de>,
     {
-        let mut id = None;
-        let mut time_ms = None;
-        let mut time_scale = None;
-        let mut target = None;
-
-        while let Some(key) = map.next_key::<AnimationDataFieldId>()? {
-            match key {
-                AnimationDataFieldId::Id => {
-                    if id.is_some() {
-                        return Err(<A::Error as serde::de::Error>::duplicate_field("id"));
-                    }
-
-                    id = Some(map.next_value::<String>()?);
+        let mut list = Vec::with_capacity(map.size_hint().unwrap_or_default());
+        while let Some(key) = map.next_key::<String>()? {
+            match self.0.animations.get(key.as_str()) {
+                Some(data) => {
+                    let content = map.next_value::<serde_value::Value>()?;
+                    list.push(
+                        (data.deserialize)(content)
+                            .map_err(<A::Error as serde::de::Error>::custom)?,
+                    );
                 }
-                AnimationDataFieldId::TimeMs => {
-                    if time_ms.is_some() {
-                        return Err(<A::Error as serde::de::Error>::duplicate_field("time_ms"));
-                    }
-
-                    time_ms = Some(map.next_value::<f32>()?);
-                }
-                AnimationDataFieldId::TimeScale => {
-                    if time_scale.is_some() {
-                        return Err(<A::Error as serde::de::Error>::duplicate_field(
-                            "time_scale",
-                        ));
-                    }
-
-                    time_scale = Some(map.next_value::<TimeBezierCurve>()?);
-                }
-                AnimationDataFieldId::Target => {
-                    if target.is_some() {
-                        return Err(<A::Error as serde::de::Error>::duplicate_field("target"));
-                    }
-
-                    target = Some(map.next_value_seed(TargetDeserializer(self.0))?);
+                None => {
+                    return Err(<A::Error as serde::de::Error>::custom(format!(
+                        "LayoutanimationTarget {key} is not registered"
+                    )));
                 }
             }
         }
 
-        Ok(Self::Value {
-            id: id.ok_or_else(|| <A::Error as serde::de::Error>::missing_field("id"))?,
-            time_ms: time_ms
-                .ok_or_else(|| <A::Error as serde::de::Error>::missing_field("time_ms"))?,
-            time_scale: time_scale.unwrap_or_default(),
-            target: target
-                .ok_or_else(|| <A::Error as serde::de::Error>::missing_field("target"))?,
-        })
+        Ok(list)
     }
 }
 
-pub struct NodeAnimationDeserializer<'de>(&'de LayoutRegistryInner);
-
-impl<'de> DeserializeSeed<'de> for NodeAnimationDeserializer<'de> {
-    type Value = NodeAnimation;
+impl<'de> DeserializeSeed<'de> for TargetListSeed<'de> {
+    type Value = Vec<DynamicAnimationTarget>;
 
     fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
     where
-        D: serde::Deserializer<'de>,
-    {
-        deserializer.deserialize_map(NodeAnimationVisitor(self.0))
-    }
-}
-
-pub struct AnimationListDeserializer<'de>(&'de LayoutRegistryInner);
-
-impl<'de> Visitor<'de> for AnimationListDeserializer<'de> {
-    type Value = Vec<NodeAnimation>;
-
-    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-        formatter.write_str("list of NodeAnimation")
-    }
-
-    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-    where
-        A: serde::de::SeqAccess<'de>,
-    {
-        let mut values = if let Some(hint) = seq.size_hint() {
-            Vec::with_capacity(hint)
-        } else {
-            vec![]
-        };
-
-        while let Some(next) = seq.next_element_seed(NodeAnimationDeserializer(self.0))? {
-            values.push(next);
-        }
-
-        Ok(values)
-    }
-}
-
-impl<'de> DeserializeSeed<'de> for AnimationListDeserializer<'de> {
-    type Value = Vec<NodeAnimation>;
-
-    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        deserializer.deserialize_seq(self)
-    }
-}
-
-pub struct AnimationsDeserializer<'de>(pub(crate) &'de LayoutRegistryInner);
-
-impl<'de> Visitor<'de> for AnimationsDeserializer<'de> {
-    type Value = Animations;
-
-    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-        formatter.write_str("map of animations")
-    }
-
-    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-    where
-        A: serde::de::MapAccess<'de>,
-    {
-        let mut values = if let Some(hint) = map.size_hint() {
-            IndexMap::with_capacity(hint)
-        } else {
-            IndexMap::new()
-        };
-
-        while let Some((key, value)) =
-            map.next_entry_seed(PhantomData::<String>, AnimationListDeserializer(self.0))?
-        {
-            values.insert(key, value);
-        }
-
-        Ok(Animations(Arc::new(RwLock::new(values))))
-    }
-}
-
-impl<'de> DeserializeSeed<'de> for AnimationsDeserializer<'de> {
-    type Value = Animations;
-
-    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
-    where
-        D: serde::Deserializer<'de>,
+        D: Deserializer<'de>,
     {
         deserializer.deserialize_map(self)
     }

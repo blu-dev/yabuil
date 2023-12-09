@@ -9,13 +9,11 @@
             "anchor": "Center",
             "node_kind": "Image",
             "node_data": {
-                "path": "images/rivals_background.png"
+                "path": "images/rivals_background.png",
+                "tint": [1.0, 1.0, 1.0, 0.4]
             },
             "attributes": {
-                "NearestNeighbor": {},
-                "ImageTint": {
-                    "color": [1.0, 1.0, 1.0, 0.4]
-                }
+                "NearestNeighbor": {}
             }
         },
         {

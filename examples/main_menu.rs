@@ -10,7 +10,7 @@ use yabuil::{
     asset::Layout,
     input_detection::{LayoutCursorPosition, LayoutCursors, LayoutNodeInputDetection},
     node::ComputedBoundingBox,
-    views::NodeWorldViewMut,
+    views::NodeEntityMut,
     ActiveLayout, LayoutApp, LayoutAttribute, LayoutBundle, LayoutPlugin,
 };
 
@@ -18,8 +18,10 @@ use yabuil::{
 pub struct ControllerCursor {}
 
 impl LayoutAttribute for ControllerCursor {
-    fn apply(&self, world: &mut NodeWorldViewMut) {
-        world.as_entity_world_mut().insert((
+    const NAME: &'static str = "ControllerCursor";
+
+    fn apply(&self, mut world: NodeEntityMut) {
+        world.insert((
             ControllerCursor {},
             LayoutCursorPosition {
                 position: Vec2::INFINITY,
@@ -30,7 +32,7 @@ impl LayoutAttribute for ControllerCursor {
             ComputedBoundingBox::default(),
         ));
 
-        let id = world.as_entity().id();
+        let id = world.id();
 
         for sibling in [
             "local_play_button",
@@ -38,16 +40,12 @@ impl LayoutAttribute for ControllerCursor {
             "settings_button",
             "exit_button",
         ] {
-            world.sibling_scope(sibling, |node| {
-                let mut node = node.unwrap();
-                node.child_scope("button_hit", |node| {
-                    let mut node = node.unwrap();
-                    node.as_entity_mut()
-                        .get_mut::<LayoutCursors>()
-                        .unwrap()
-                        .push(yabuil::input_detection::Cursor::Custom(id));
-                });
-            });
+            world
+                .sibling(sibling)
+                .child("button_hit")
+                .get_mut::<LayoutCursors>()
+                .unwrap()
+                .push(yabuil::input_detection::Cursor::Custom(id));
         }
     }
 }
@@ -94,7 +92,9 @@ pub enum MainMenuButton {
 }
 
 impl LayoutAttribute for MainMenuButton {
-    fn apply(&self, world: &mut NodeWorldViewMut) {
+    const NAME: &'static str = "MainMenuButton";
+
+    fn apply(&self, mut world: NodeEntityMut) {
         let name = match self {
             Self::LocalPlay => "LOCAL PLAY",
             Self::OnlinePlay => "ONLINE PLAY",
@@ -102,37 +102,32 @@ impl LayoutAttribute for MainMenuButton {
             Self::Exit => "QUIT TO DESKTOP",
         };
 
-        world.child_scope("button_content/button_text", |text| {
-            let mut text = text.unwrap();
-            text.as_text_node_mut().unwrap().set_text(name);
+        world
+            .child("button_content/button_text")
+            .text()
+            .set_text(name);
+        let mut button_hit = world.child("button_hit");
+        let mut input_det = button_hit.get_mut::<LayoutNodeInputDetection>().unwrap();
+        input_det.on_global_hover(|_, node| {
+            animate_menu_button(node, true);
         });
-
-        world.child_scope("button_hit", |hit| {
-            let mut hit = hit.unwrap();
-            let mut hit = hit.as_entity_mut();
-            let mut input_det = hit.get_mut::<LayoutNodeInputDetection>().unwrap();
-            input_det.on_global_hover(|_, node| {
-                animate_menu_button(node, true);
-            });
-            input_det.on_global_unhover(|_, node| {
-                animate_menu_button(node, false);
-            });
+        input_det.on_global_unhover(|_, node| {
+            animate_menu_button(node, false);
         });
-
-        world.as_entity_world_mut().insert(*self);
+        world.insert(*self);
     }
 }
 
-fn animate_menu_button(button: &mut NodeWorldViewMut, on: bool) {
-    let animation = if on { "select" } else { "unselect" };
-
-    button.parent_scope(|parent| {
-        let mut parent = parent.unwrap();
-        parent
-            .as_layout_node_mut()
-            .unwrap()
-            .play_animation(animation);
-    });
+fn animate_menu_button(mut button: NodeEntityMut, on: bool) {
+    if on {
+        button.parent().layout().play_animation("select").unwrap();
+    } else {
+        button
+            .parent()
+            .layout()
+            .play_or_reverse_animation("select")
+            .unwrap();
+    }
 }
 
 fn startup_system(mut commands: Commands, asset_server: Res<AssetServer>) {
@@ -176,22 +171,12 @@ fn startup_system(mut commands: Commands, asset_server: Res<AssetServer>) {
 }
 
 pub fn main() {
-    let mut args = std::env::args();
-    let _ = args.next();
-    let editor = args.next();
-
-    let mut app = if let Some("editor") = editor.as_ref().map(|s| s.as_str()) {
-        editor::get_editor_app("./assets", "layouts/main_menu.layout.json")
-    } else {
-        let mut app = App::new();
-        app.add_plugins((DefaultPlugins, LayoutPlugin::default()));
-        app
-    };
-
-    app.register_type::<MainMenuButton>()
+    App::new()
+        .add_plugins((DefaultPlugins, LayoutPlugin::default()))
+        .register_type::<MainMenuButton>()
         .register_type::<ControllerCursor>()
-        .register_layout_attribute::<MainMenuButton>("MainMenuButton")
-        .register_layout_attribute::<ControllerCursor>("ControllerCursor")
+        .register_layout_attribute::<MainMenuButton>()
+        .register_layout_attribute::<ControllerCursor>()
         .add_systems(Startup, startup_system)
         .add_systems(Update, update_controller_cursor_node)
         .add_systems(Update, bevy::window::close_on_esc)

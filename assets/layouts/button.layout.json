@@ -47,89 +47,63 @@
         }
     ],
     "animations": {
-        "select": [
-            {
-                "id": "button_content",
-                "time_ms": 100.0,
-                "target": {
-                    "Position": {
-                        "start": [0.0, 0.0],
-                        "end": [100.0, 0.0]
-                    }
-                }
-            },
-            {
-                "id": "button_content/button_image",
-                "time_ms": 100.0,
-                "target": {
-                    "Color": {
-                        "start": [0.5, 0.5, 0.5, 1.0],
-                        "end": [1.0, 1.0, 1.0, 1.0]
-                    }
-                }
-            },
-            {
-                "id": "button_content/button_text",
-                "time_ms": 100.0,
-                "target": {
-                    "Color": {
-                        "start": [0.5, 0.5, 0.5, 1.0],
-                        "end": [1.0, 1.0, 1.0, 1.0]
-                    }
-                }
-            },
-            {
-                "id": "button_hit",
-                "time_ms": 1.0,
-                "target": {
-                    "Size": {
-                        "start": [540.0, 80.0],
-                        "end": [640.0, 80.0]
-                    }
-                }
+      "select": {
+        "button_content": [
+          {
+            "timestamp_ms": 0,
+            "targets": {
+              "Position": [0.0, 0.0]
             }
+          },
+          {
+            "timestamp_ms": 100,
+            "targets": {
+              "Position": [100.0, 0.0]
+            }
+          }
         ],
-        "unselect": [
-            {
-                "id": "button_content",
-                "time_ms": 100.0,
-                "target": {
-                    "Position": {
-                        "start": [100.0, 0.0],
-                        "end": [0.0, 0.0]
-                    }
-                }
-            },
-            {
-                "id": "button_content/button_image",
-                "time_ms": 100.0,
-                "target": {
-                    "Color": {
-                        "start": [1.0, 1.0, 1.0, 1.0],
-                        "end": [0.5, 0.5, 0.5, 1.0]
-                    }
-                }
-            },
-            {
-                "id": "button_content/button_text",
-                "time_ms": 100.0,
-                "target": {
-                    "Color": {
-                        "start": [1.0, 1.0, 1.0, 1.0],
-                        "end": [0.5, 0.5, 0.5, 1.0]
-                    }
-                }
-            },
-            {
-                "id": "button_hit",
-                "time_ms": 1.0,
-                "target": {
-                    "Size": {
-                        "start": [640.0, 80.0],
-                        "end": [540.0, 80.0]
-                    }
-                }
+        "button_content/button_image": [
+          {
+            "timestamp_ms": 0,
+            "targets": {
+              "Color": [0.5, 0.5, 0.5, 1.0]
             }
+          },
+          {
+            "timestamp_ms": 100,
+            "targets": {
+              "Color": [1.0, 1.0, 1.0, 1.0]
+            }
+          }
+        ],
+        "button_content/button_text": [
+          {
+            "timestamp_ms": 0,
+            "targets": {
+              "Color": [0.5, 0.5, 0.5, 1.0]
+            }
+          },
+          {
+            "timestamp_ms": 100,
+            "targets": {
+              "Color": [1.0, 1.0, 1.0, 1.0]
+            }
+          }
+        ],
+        "button_hit": [
+          {
+            "timestamp_ms": 0,
+            "targets": {
+              "Size": [540.0, 80.0]
+            }
+          },
+          {
+            "timestamp_ms": 100,
+            "targets": {
+              "Size": [640.0, 80.0]
+            }
+          }
         ]
+      }
     }
 }
