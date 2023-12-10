@@ -3,7 +3,7 @@ use std::any::TypeId;
 use bevy::{prelude::*, utils::hashbrown::HashMap};
 use camino::{Utf8Path, Utf8PathBuf};
 
-use crate::{node::LayoutHandle, LayoutNodeId};
+use crate::{node::LayoutHandle, LayoutNodeId, views::NodeMut};
 
 use serde::{Deserialize, Serialize};
 
@@ -45,7 +45,7 @@ pub struct DynamicAnimationTarget {
     data: *mut (),
     // SAFETY: The caller must ensure that the type of data being passed into BOTH parameters
     //          is the same type that created this animation node.
-    interpolate: unsafe fn(*const (), Option<*const ()>, EntityMut, f32),
+    interpolate: unsafe fn(*const (), Option<*const ()>, NodeMut, f32),
 }
 
 unsafe impl Send for DynamicAnimationTarget {}
@@ -86,7 +86,7 @@ impl DynamicAnimationTarget {
         self.type_info.type_id == TypeId::of::<T>()
     }
 
-    pub fn interpolate_from_start(&self, node: EntityMut, progress: f32) {
+    pub fn interpolate_from_start(&self, node: NodeMut, progress: f32) {
         // SAFETY: we are providing the owned pointer that we created ont ype construction, it is
         // going to be the same type
         unsafe { (self.interpolate)(self.data, None, node, progress) }
@@ -95,7 +95,7 @@ impl DynamicAnimationTarget {
     pub fn interpolate_with_previous(
         &self,
         previous: &DynamicAnimationTarget,
-        node: EntityMut,
+        node: NodeMut,
         progress: f32,
     ) {
         #[inline(never)]
@@ -119,7 +119,7 @@ impl DynamicAnimationTarget {
     pub fn interpolate<T: TypePath + 'static>(
         &self,
         previous: Option<&T>,
-        node: EntityMut,
+        node: NodeMut,
         progress: f32,
     ) {
         #[inline(never)]
@@ -230,7 +230,7 @@ pub struct LayoutAnimation(pub(crate) HashMap<Utf8PathBuf, Keyframes>);
 pub trait LayoutAnimationTarget: TypePath + Send + Sync + 'static {
     const NAME: &'static str;
 
-    fn interpolate(&self, previous: Option<&Self>, node: EntityMut, progress: f32);
+    fn interpolate(&self, previous: Option<&Self>, node: NodeMut, progress: f32);
 }
 
 #[derive(Debug)]
@@ -292,6 +292,15 @@ impl LayoutAnimationPlaybackState {
                 progress: 0,
                 is_reverse: false,
             };
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn stop_animation(&mut self, name: &str) -> bool {
+        if let Some(state) = self.0.get_mut(name) {
+            *state = InternalPlaybackState::Stopped;
             true
         } else {
             false
@@ -541,14 +550,16 @@ pub(crate) fn update_animations(world: &mut World) {
                     // SAFETY: This is safe since we remove the only other active mutable reference
                     // into the world by making it readonly (we will use it as mutable again later
                     // but for all intents and purposes this is safe)
-                    let mut entity = match try_get_descendant_id(unsafe { world.world() }, readonly, node_id) {
+                    let mut node = match try_get_descendant_id(unsafe { world.world() }, readonly, node_id) {
                         DescendantId::None => continue, // We don't log anything because that's done in
                                                         // the function
-                        DescendantId::This => entity.reborrow(),
+                        // SAFETY: We are repurposing the EntityMut that we had earlier, it is
+                        // still the only exclusive reference
+                        DescendantId::This => unsafe { NodeMut::try_new(world, readonly.id()).unwrap() },
                         // SAFETY: This is safe since we have confirmed that it is not the same
                         // entity (therefore no double mutable reference) and we are not iterating
                         // in parallel so we have exclusive access to this entity
-                        DescendantId::Other(id) => unsafe { EntityMut::from(world.world_mut().entity_mut(id)) }
+                        DescendantId::Other(id) => unsafe { NodeMut::try_new(world, id).unwrap() }
                     };
 
                     for channel in keyframes.channels.iter() {
@@ -576,7 +587,7 @@ pub(crate) fn update_animations(world: &mut World) {
 
                             let progress = kf.time_scale.map(progress.clamp(0.0, 1.0));
 
-                            kf.target.interpolate_from_start(entity.reborrow(), progress);
+                            kf.target.interpolate_from_start(node.reborrow(), progress);
                         } else {
                             let prev_kf = &channel.keyframes[index - 1];
                             // doing a non saturating sub here is safe since we sort the 
@@ -590,7 +601,7 @@ pub(crate) fn update_animations(world: &mut World) {
 
                             let progress = kf.time_scale.map(progress.clamp(0.0, 1.0));
 
-                            kf.target.interpolate_with_previous(&prev_kf.target, entity.reborrow(), progress);
+                            kf.target.interpolate_with_previous(&prev_kf.target, node.reborrow(), progress);
                         }
                     }
                 }

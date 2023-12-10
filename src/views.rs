@@ -1,7 +1,10 @@
 use bevy::{
     ecs::{
+        archetype::{Archetype, ArchetypeComponentId},
         change_detection::MutUntyped,
-        component::{ComponentId, ComponentTicks},
+        component::{ComponentId, ComponentTicks, Tick},
+        query::{Access, FilteredAccess, ReadOnlyWorldQuery, WorldQuery},
+        storage::{Table, TableRow},
         world::unsafe_world_cell::UnsafeWorldCell,
     },
     prelude::*,
@@ -15,7 +18,8 @@ use crate::{
     animation::{LayoutAnimationPlaybackState, PlaybackState},
     asset::Layout,
     components::NodeKind,
-    LayoutNodeId,
+    node::Node,
+    LayoutId, LayoutNodeId,
 };
 
 #[derive(Error, Debug)]
@@ -34,6 +38,9 @@ pub enum NodeEntityError {
 
     #[error("The node {0:?} has no parent entity")]
     NoParent(Entity),
+
+    #[error("The node {0:?} is missing the root layout id")]
+    NoRootId(Entity),
 }
 
 /// Mutable entity accessor with layout tree traversal capabilities
@@ -43,6 +50,17 @@ pub enum NodeEntityError {
 /// it will be ever-so-slightly less performant than using [`EntityWorldMut`], but the convenience
 /// factor of layout tree traversal outweighs that.
 pub struct NodeEntityMut<'w> {
+    world: UnsafeWorldCell<'w>,
+    id: Entity,
+}
+
+#[derive(Copy, Clone)]
+pub struct NodeRef<'w> {
+    world: UnsafeWorldCell<'w>,
+    id: Entity,
+}
+
+pub struct NodeMut<'w> {
     world: UnsafeWorldCell<'w>,
     id: Entity,
 }
@@ -138,6 +156,22 @@ impl<'w> NodeEntityMut<'w> {
         Self::try_new(world, id).unwrap()
     }
 
+    pub fn get_root<'a>(&'a mut self) -> Result<NodeEntityMut<'a>, NodeEntityError> {
+        let root_id = *self
+            .get::<LayoutId>()
+            .ok_or(NodeEntityError::NoRootId(self.id))?;
+
+        Ok(NodeEntityMut {
+            world: self.world,
+            id: root_id.0,
+        })
+    }
+
+    #[track_caller]
+    pub fn root<'a>(&'a mut self) -> NodeEntityMut<'a> {
+        self.get_root().unwrap()
+    }
+
     pub fn get_child<'a>(
         &'a mut self,
         id: impl AsRef<Utf8Path>,
@@ -188,34 +222,46 @@ impl<'w> NodeEntityMut<'w> {
         self.get_sibling(id).unwrap()
     }
 
-    pub fn get_image<'a>(&'a mut self) -> Option<ImageNodeEntity<'a>> {
+    pub fn get_image<'a>(&'a mut self) -> Option<ImageNodeMut<'a>> {
         (*self.get::<NodeKind>().unwrap() == NodeKind::Image)
-            .then(|| ImageNodeEntity(self.reborrow()))
+            .then(|| ImageNodeMut(From::from(self.reborrow())))
     }
 
     #[track_caller]
-    pub fn image<'a>(&'a mut self) -> ImageNodeEntity<'a> {
+    pub fn image<'a>(&'a mut self) -> ImageNodeMut<'a> {
         self.get_image().expect("node should be an image node")
     }
 
-    pub fn get_text<'a>(&'a mut self) -> Option<TextNodeEntity<'a>> {
+    pub fn get_text<'a>(&'a mut self) -> Option<TextNodeMut<'a>> {
         (*self.get::<NodeKind>().unwrap() == NodeKind::Text)
-            .then(|| TextNodeEntity(self.reborrow()))
+            .then(|| TextNodeMut(From::from(self.reborrow())))
     }
 
     #[track_caller]
-    pub fn text<'a>(&'a mut self) -> TextNodeEntity<'a> {
+    pub fn text<'a>(&'a mut self) -> TextNodeMut<'a> {
         self.get_text().expect("node should be a text node")
     }
 
-    pub fn get_layout<'a>(&'a mut self) -> Option<LayoutNodeEntity<'a>> {
+    pub fn get_layout<'a>(&'a mut self) -> Option<LayoutNodeMut<'a>> {
         (*self.get::<NodeKind>().unwrap() == NodeKind::Layout)
-            .then(|| LayoutNodeEntity(self.reborrow()))
+            .then(|| LayoutNodeMut(From::from(self.reborrow())))
     }
 
     #[track_caller]
-    pub fn layout<'a>(&'a mut self) -> LayoutNodeEntity<'a> {
+    pub fn layout<'a>(&'a mut self) -> LayoutNodeMut<'a> {
         self.get_layout().expect("node should be a layout node")
+    }
+
+    pub fn get_group<'a>(&'a mut self) -> Option<GroupNodeMut<'a>> {
+        (*self.get::<NodeKind>().unwrap() == NodeKind::Group).then(|| GroupNodeMut {
+            world: self.world,
+            id: self.id,
+        })
+    }
+
+    #[track_caller]
+    pub fn group<'a>(&'a mut self) -> GroupNodeMut<'a> {
+        self.get_group().expect("node should be a group node")
     }
 
     pub fn world(&self) -> &World {
@@ -247,7 +293,7 @@ impl<'w> NodeEntityMut<'w> {
         self.world().entity(self.id).get_change_ticks::<T>()
     }
 
-    pub fn get_chnage_ticks_by_id(&self, component_id: ComponentId) -> Option<ComponentTicks> {
+    pub fn get_change_ticks_by_id(&self, component_id: ComponentId) -> Option<ComponentTicks> {
         self.world()
             .entity(self.id)
             .get_change_ticks_by_id(component_id)
@@ -347,9 +393,237 @@ impl<'w> NodeEntityMut<'w> {
     }
 }
 
-pub struct ImageNodeEntity<'w>(NodeEntityMut<'w>);
+impl<'w> NodeRef<'w> {
+    #[inline(never)]
+    #[cold]
+    fn panic_if_wrong_entity(entity: Entity) -> ! {
+        panic!("Failed to get the entity {entity:?}");
+    }
 
-impl ImageNodeEntity<'_> {
+    /// SAFETY: The caller must ensure that there are no exclusive references or accesses to any
+    /// component on the provided entity
+    pub(crate) unsafe fn try_new(
+        world: UnsafeWorldCell<'w>,
+        id: Entity,
+    ) -> Result<Self, NodeEntityError> {
+        let entity = world
+            .get_entity(id)
+            .ok_or(NodeEntityError::InvalidEntity(id))?;
+
+        if entity.get::<Node>().is_none() {
+            return Err(NodeEntityError::NotANode(id));
+        }
+
+        Ok(Self { world, id })
+    }
+
+    pub fn get_image(&self) -> Option<ImageNodeRef<'w>> {
+        (*self.get::<NodeKind>().unwrap() == NodeKind::Image).then(|| ImageNodeRef(*self))
+    }
+
+    #[track_caller]
+    pub fn image(&self) -> ImageNodeRef<'w> {
+        self.get_image().expect("node should be an image node")
+    }
+
+    pub fn get_text(&self) -> Option<TextNodeRef<'w>> {
+        (*self.get::<NodeKind>().unwrap() == NodeKind::Text).then(|| TextNodeRef(*self))
+    }
+
+    #[track_caller]
+    pub fn text(&self) -> TextNodeRef<'w> {
+        self.get_text().expect("node should be a text node")
+    }
+
+    pub fn get_layout(&self) -> Option<LayoutNodeRef<'w>> {
+        (*self.get::<NodeKind>().unwrap() == NodeKind::Layout).then(|| LayoutNodeRef(*self))
+    }
+
+    #[track_caller]
+    pub fn layout(&self) -> LayoutNodeRef<'w> {
+        self.get_layout().expect("node should be a layout node")
+    }
+
+    pub fn get<T: Component>(&self) -> Option<&T> {
+        let Some(entity) = self.world.get_entity(self.id) else {
+            Self::panic_if_wrong_entity(self.id)
+        };
+        // SAFETY: Construction of this type is either from a more powerful ownership
+        // (ownership of the whole world) or on the user to guarantee this is the only exclusive
+        // access
+        unsafe { entity.get::<T>() }
+    }
+
+    pub fn get_by_id(&self, component_id: ComponentId) -> Option<bevy::ptr::Ptr<'_>> {
+        let Some(entity) = self.world.get_entity(self.id) else {
+            Self::panic_if_wrong_entity(self.id)
+        };
+
+        // SAFETY: See above comments
+        unsafe { entity.get_by_id(component_id) }
+    }
+
+    pub fn get_change_ticks<T: Component>(&self) -> Option<ComponentTicks> {
+        let Some(entity) = self.world.get_entity(self.id) else {
+            Self::panic_if_wrong_entity(self.id)
+        };
+
+        // SAFETY: See above comments
+        unsafe { entity.get_change_ticks::<T>() }
+    }
+
+    pub fn get_change_ticks_by_id(&self, component_id: ComponentId) -> Option<ComponentTicks> {
+        let Some(entity) = self.world.get_entity(self.id) else {
+            Self::panic_if_wrong_entity(self.id)
+        };
+
+        // SAFETY: See above comments
+        unsafe { entity.get_change_ticks_by_id(component_id) }
+    }
+}
+
+impl<'w> NodeMut<'w> {
+    #[inline(never)]
+    #[cold]
+    fn panic_if_wrong_entity(entity: Entity) -> ! {
+        panic!("Failed to get the entity {entity:?}");
+    }
+
+    /// SAFETY: The caller must ensure that there are no other references or accesses to any
+    /// component on the provided entity
+    pub(crate) unsafe fn try_new(
+        world: UnsafeWorldCell<'w>,
+        id: Entity,
+    ) -> Result<Self, NodeEntityError> {
+        let entity = world
+            .get_entity(id)
+            .ok_or(NodeEntityError::InvalidEntity(id))?;
+        if entity.get::<Node>().is_none() {
+            return Err(NodeEntityError::NotANode(id));
+        }
+
+        Ok(Self { world, id })
+    }
+
+    pub fn get_image<'a>(&'a mut self) -> Option<ImageNodeMut<'a>> {
+        (*self.get::<NodeKind>().unwrap() == NodeKind::Image).then(|| ImageNodeMut(self.reborrow()))
+    }
+
+    #[track_caller]
+    pub fn image<'a>(&'a mut self) -> ImageNodeMut<'a> {
+        self.get_image().expect("node should be an image node")
+    }
+
+    pub fn get_text<'a>(&'a mut self) -> Option<TextNodeMut<'a>> {
+        (*self.get::<NodeKind>().unwrap() == NodeKind::Text).then(|| TextNodeMut(self.reborrow()))
+    }
+
+    #[track_caller]
+    pub fn text<'a>(&'a mut self) -> TextNodeMut<'a> {
+        self.get_text().expect("node should be a text node")
+    }
+
+    pub fn get_layout<'a>(&'a mut self) -> Option<LayoutNodeMut<'a>> {
+        (*self.get::<NodeKind>().unwrap() == NodeKind::Layout)
+            .then(|| LayoutNodeMut(self.reborrow()))
+    }
+
+    #[track_caller]
+    pub fn layout<'a>(&'a mut self) -> LayoutNodeMut<'a> {
+        self.get_layout().expect("node should be a layout node")
+    }
+
+    pub fn reborrow<'a>(&'a mut self) -> NodeMut<'a> {
+        Self {
+            world: self.world,
+            id: self.id,
+        }
+    }
+
+    pub fn get<T: Component>(&self) -> Option<&T> {
+        let Some(entity) = self.world.get_entity(self.id) else {
+            Self::panic_if_wrong_entity(self.id)
+        };
+        // SAFETY: Construction of this type is either from a more powerful ownership
+        // (ownership of the whole world) or on the user to guarantee this is the only exclusive
+        // access
+        unsafe { entity.get::<T>() }
+    }
+
+    pub fn get_by_id(&self, component_id: ComponentId) -> Option<bevy::ptr::Ptr<'_>> {
+        let Some(entity) = self.world.get_entity(self.id) else {
+            Self::panic_if_wrong_entity(self.id)
+        };
+
+        // SAFETY: See above comments
+        unsafe { entity.get_by_id(component_id) }
+    }
+
+    pub fn get_change_ticks<T: Component>(&self) -> Option<ComponentTicks> {
+        let Some(entity) = self.world.get_entity(self.id) else {
+            Self::panic_if_wrong_entity(self.id)
+        };
+
+        // SAFETY: See above comments
+        unsafe { entity.get_change_ticks::<T>() }
+    }
+
+    pub fn get_change_ticks_by_id(&self, component_id: ComponentId) -> Option<ComponentTicks> {
+        let Some(entity) = self.world.get_entity(self.id) else {
+            Self::panic_if_wrong_entity(self.id)
+        };
+
+        // SAFETY: See above comments
+        unsafe { entity.get_change_ticks_by_id(component_id) }
+    }
+
+    pub fn get_mut<T: Component>(&mut self) -> Option<Mut<'_, T>> {
+        let Some(entity) = self.world.get_entity(self.id) else {
+            Self::panic_if_wrong_entity(self.id)
+        };
+        // SAFETY: See above comments
+        unsafe { entity.get_mut::<T>() }
+    }
+
+    pub fn get_mut_by_id(&mut self, component_id: ComponentId) -> Option<MutUntyped<'_>> {
+        let Some(entity) = self.world.get_entity(self.id) else {
+            Self::panic_if_wrong_entity(self.id)
+        };
+        // SAFETY: See above comments
+        unsafe { entity.get_mut_by_id(component_id) }
+    }
+}
+
+impl<'w> From<NodeEntityMut<'w>> for NodeMut<'w> {
+    fn from(value: NodeEntityMut<'w>) -> Self {
+        Self {
+            world: value.world,
+            id: value.id,
+        }
+    }
+}
+
+pub struct ImageNodeRef<'w>(NodeRef<'w>);
+
+impl ImageNodeRef<'_> {
+    #[track_caller]
+    pub fn image(&self) -> &Handle<Image> {
+        self.0
+            .get::<Handle<Image>>()
+            .expect("Image node should have a Handle<Image> component, did you remove it?")
+    }
+
+    #[track_caller]
+    pub fn sprite_data(&self) -> &Sprite {
+        self.0
+            .get::<Sprite>()
+            .expect("Image node should have a Sprite component, did you remove it?")
+    }
+}
+
+pub struct ImageNodeMut<'w>(NodeMut<'w>);
+
+impl ImageNodeMut<'_> {
     #[track_caller]
     pub fn image(&self) -> &Handle<Image> {
         self.0
@@ -381,9 +655,30 @@ impl ImageNodeEntity<'_> {
     }
 }
 
-pub struct TextNodeEntity<'w>(NodeEntityMut<'w>);
+pub struct TextNodeRef<'w>(NodeRef<'w>);
 
-impl TextNodeEntity<'_> {
+impl TextNodeRef<'_> {
+    #[track_caller]
+    fn text_component(&self) -> &Text {
+        self.0
+            .get::<Text>()
+            .expect("Text node should have a text component, did you remove it?")
+    }
+
+    #[track_caller]
+    pub fn text(&self) -> &str {
+        self.text_component().sections[0].value.as_str()
+    }
+
+    #[track_caller]
+    pub fn style(&self) -> &TextStyle {
+        &self.text_component().sections[0].style
+    }
+}
+
+pub struct TextNodeMut<'w>(NodeMut<'w>);
+
+impl TextNodeMut<'_> {
     #[track_caller]
     fn text_component(&self) -> &Text {
         self.0
@@ -426,9 +721,29 @@ pub enum LayoutAnimationError {
     NoAnimation(String),
 }
 
-pub struct LayoutNodeEntity<'w>(NodeEntityMut<'w>);
+pub struct LayoutNodeRef<'w>(NodeRef<'w>);
 
-impl LayoutNodeEntity<'_> {
+impl LayoutNodeRef<'_> {
+    /// Checks if this layout is currently playing ANY animations
+    pub fn is_playing_any(&self) -> bool {
+        self.0
+            .get::<LayoutAnimationPlaybackState>()
+            .expect("LayoutNode should have playback state")
+            .is_playing_any()
+    }
+
+    /// Gets the state of the provided animation, if it exists
+    pub fn animation_state(&self, name: impl AsRef<str>) -> Option<PlaybackState> {
+        self.0
+            .get::<LayoutAnimationPlaybackState>()
+            .expect("LayoutNode should have playback state")
+            .playback_state(name.as_ref())
+    }
+}
+
+pub struct LayoutNodeMut<'w>(NodeMut<'w>);
+
+impl LayoutNodeMut<'_> {
     /// Checks if this layout is currently playing ANY animations
     pub fn is_playing_any(&self) -> bool {
         self.0
@@ -452,6 +767,16 @@ impl LayoutNodeEntity<'_> {
             .get_mut::<LayoutAnimationPlaybackState>()
             .expect("LayoutNode should have playback state")
             .play_animation(name)
+            .then_some(())
+            .ok_or_else(|| LayoutAnimationError::NoAnimation(name.to_string()))
+    }
+
+    pub fn stop_animation(&mut self, name: impl AsRef<str>) -> Result<(), LayoutAnimationError> {
+        let name = name.as_ref();
+        self.0
+            .get_mut::<LayoutAnimationPlaybackState>()
+            .expect("LayoutNode should have playback state")
+            .stop_animation(name)
             .then_some(())
             .ok_or_else(|| LayoutAnimationError::NoAnimation(name.to_string()))
     }
@@ -527,7 +852,7 @@ impl LayoutNodeEntity<'_> {
     }
 }
 
-pub struct GroupNodeEntity<'w> {
+pub struct GroupNodeMut<'w> {
     world: UnsafeWorldCell<'w>,
     id: Entity,
 }
@@ -553,7 +878,7 @@ pub struct LayoutNodeArgs {
     pub layout: Handle<Layout>,
 }
 
-impl<'w> GroupNodeEntity<'w> {
+impl<'w> GroupNodeMut<'w> {
     pub fn add_image_node<'a>(&'a mut self, args: ImageNodeArgs) -> NodeEntityMut<'a> {
         todo!()
     }
@@ -566,7 +891,7 @@ impl<'w> GroupNodeEntity<'w> {
         todo!()
     }
 
-    pub fn add_group_node<'a>(&'a mut self, args: NodeArgs) -> GroupNodeEntity<'a> {
+    pub fn add_group_node<'a>(&'a mut self, args: NodeArgs) -> GroupNodeMut<'a> {
         todo!()
     }
 
@@ -576,4 +901,343 @@ impl<'w> GroupNodeEntity<'w> {
             id: self.id,
         }
     }
+}
+
+unsafe impl<'a> ReadOnlyWorldQuery for NodeRef<'a> {}
+
+unsafe impl<'a> WorldQuery for NodeRef<'a> {
+    type Fetch<'w> = UnsafeWorldCell<'w>;
+    type Item<'w> = NodeRef<'w>;
+    type ReadOnly = Self;
+    type State = ComponentId;
+
+    fn shrink<'wlong: 'wshort, 'wshort>(item: Self::Item<'wlong>) -> Self::Item<'wshort> {
+        item
+    }
+
+    const IS_DENSE: bool = true;
+    const IS_ARCHETYPAL: bool = true;
+
+    unsafe fn init_fetch<'w>(
+        world: UnsafeWorldCell<'w>,
+        _state: &Self::State,
+        _last_run: Tick,
+        _this_run: Tick,
+    ) -> Self::Fetch<'w> {
+        world
+    }
+
+    #[inline]
+    unsafe fn set_archetype<'w>(
+        _fetch: &mut Self::Fetch<'w>,
+        _state: &Self::State,
+        _archetype: &'w Archetype,
+        _table: &'w Table,
+    ) {
+    }
+
+    #[inline]
+    unsafe fn set_table<'w>(_fetch: &mut Self::Fetch<'w>, _state: &Self::State, _table: &'w Table) {
+    }
+
+    #[inline(always)]
+    unsafe fn fetch<'w>(
+        fetch: &mut Self::Fetch<'w>,
+        entity: Entity,
+        _table_row: TableRow,
+    ) -> Self::Item<'w> {
+        NodeRef::try_new(*fetch, entity).unwrap()
+    }
+
+    fn update_component_access(_state: &Self::State, access: &mut FilteredAccess<ComponentId>) {
+        assert!(
+            !access.access().has_any_read(),
+            "NodeMut conflicts with a previous access in this query. Exclusive access cannot coincide with any other accesses."
+        );
+
+        access.write_all()
+    }
+
+    fn update_archetype_component_access(
+        _state: &Self::State,
+        archetype: &Archetype,
+        access: &mut Access<ArchetypeComponentId>,
+    ) {
+        for component_id in archetype.components() {
+            access.add_write(archetype.get_archetype_component_id(component_id).unwrap());
+        }
+    }
+
+    fn init_state(world: &mut World) -> Self::State {
+        world.init_component::<Node>()
+    }
+
+    fn matches_component_set(
+        state: &Self::State,
+        set_contains_id: &impl Fn(ComponentId) -> bool,
+    ) -> bool {
+        set_contains_id(*state)
+    }
+}
+
+unsafe impl<'a> WorldQuery for NodeMut<'a> {
+    type Fetch<'w> = UnsafeWorldCell<'w>;
+    type Item<'w> = NodeMut<'w>;
+    type ReadOnly = NodeRef<'a>;
+    type State = ComponentId; // The node component ID
+
+    fn shrink<'wlong: 'wshort, 'wshort>(item: Self::Item<'wlong>) -> Self::Item<'wshort> {
+        item
+    }
+
+    const IS_DENSE: bool = true;
+    const IS_ARCHETYPAL: bool = true;
+
+    unsafe fn init_fetch<'w>(
+        world: UnsafeWorldCell<'w>,
+        _state: &Self::State,
+        _last_run: Tick,
+        _this_run: Tick,
+    ) -> Self::Fetch<'w> {
+        world
+    }
+
+    #[inline]
+    unsafe fn set_archetype<'w>(
+        _fetch: &mut Self::Fetch<'w>,
+        _state: &Self::State,
+        _archetype: &'w Archetype,
+        _table: &'w Table,
+    ) {
+    }
+
+    #[inline]
+    unsafe fn set_table<'w>(_fetch: &mut Self::Fetch<'w>, _state: &Self::State, _table: &'w Table) {
+    }
+
+    #[inline(always)]
+    unsafe fn fetch<'w>(
+        fetch: &mut Self::Fetch<'w>,
+        entity: Entity,
+        _table_row: TableRow,
+    ) -> Self::Item<'w> {
+        NodeMut::try_new(*fetch, entity).unwrap()
+    }
+
+    fn update_component_access(_state: &Self::State, access: &mut FilteredAccess<ComponentId>) {
+        assert!(
+            !access.access().has_any_read(),
+            "NodeMut conflicts with a previous access in this query. Exclusive access cannot coincide with any other accesses."
+        );
+
+        access.write_all()
+    }
+
+    fn update_archetype_component_access(
+        _state: &Self::State,
+        archetype: &Archetype,
+        access: &mut Access<ArchetypeComponentId>,
+    ) {
+        for component_id in archetype.components() {
+            access.add_write(archetype.get_archetype_component_id(component_id).unwrap());
+        }
+    }
+
+    fn init_state(world: &mut World) -> Self::State {
+        world.init_component::<Node>()
+    }
+
+    fn matches_component_set(
+        state: &Self::State,
+        set_contains_id: &impl Fn(ComponentId) -> bool,
+    ) -> bool {
+        set_contains_id(*state)
+    }
+}
+
+macro_rules! impl_node_kind_query {
+    ($($mut_name:ident, $ro_name:ident, $kind:ident);*) => {
+        $(
+            unsafe impl<'a> WorldQuery for $mut_name<'a> {
+                type Fetch<'w> = UnsafeWorldCell<'w>;
+                type Item<'w> = $mut_name<'w>;
+                type ReadOnly = $ro_name<'a>;
+                type State = ComponentId; // The node component ID
+
+                fn shrink<'wlong: 'wshort, 'wshort>(item: Self::Item<'wlong>) -> Self::Item<'wshort> {
+                    item
+                }
+
+                const IS_DENSE: bool = true;
+                const IS_ARCHETYPAL: bool = true;
+
+                unsafe fn init_fetch<'w>(
+                    world: UnsafeWorldCell<'w>,
+                    _state: &Self::State,
+                    _last_run: Tick,
+                    _this_run: Tick,
+                ) -> Self::Fetch<'w> {
+                    world
+                }
+
+                #[inline]
+                unsafe fn set_archetype<'w>(
+                    _fetch: &mut Self::Fetch<'w>,
+                    _state: &Self::State,
+                    _archetype: &'w Archetype,
+                    _table: &'w Table,
+                ) {
+                }
+
+                #[inline]
+                unsafe fn set_table<'w>(_fetch: &mut Self::Fetch<'w>, _state: &Self::State, _table: &'w Table) {
+                }
+
+                #[inline(always)]
+                unsafe fn fetch<'w>(
+                    fetch: &mut Self::Fetch<'w>,
+                    entity: Entity,
+                    _table_row: TableRow,
+                ) -> Self::Item<'w> {
+                    let node = NodeMut::try_new(*fetch, entity).unwrap();
+                    assert_eq!(*node.get::<NodeKind>().unwrap(), NodeKind::$kind);
+                    $mut_name(node)
+                }
+
+                fn update_component_access(_state: &Self::State, access: &mut FilteredAccess<ComponentId>) {
+                    assert!(
+                        !access.access().has_any_read(),
+                        "NodeMut conflicts with a previous access in this query. Exclusive access cannot coincide with any other accesses."
+                    );
+
+                    access.write_all()
+                }
+
+                fn update_archetype_component_access(
+                    _state: &Self::State,
+                    archetype: &Archetype,
+                    access: &mut Access<ArchetypeComponentId>,
+                ) {
+                    for component_id in archetype.components() {
+                        access.add_write(archetype.get_archetype_component_id(component_id).unwrap());
+                    }
+                }
+
+                fn init_state(world: &mut World) -> Self::State {
+                    world.init_component::<Node>()
+                }
+
+                fn matches_component_set(
+                    state: &Self::State,
+                    set_contains_id: &impl Fn(ComponentId) -> bool,
+                ) -> bool {
+                    set_contains_id(*state)
+                }
+
+                unsafe fn filter_fetch(
+                    fetch: &mut Self::Fetch<'_>,
+                    entity: Entity,
+                    _table_row: TableRow,
+                ) -> bool {
+                    let node = NodeMut::try_new(*fetch, entity).unwrap();
+                    *node.get::<NodeKind>().unwrap() == NodeKind::$kind
+                }
+
+            }
+
+            unsafe impl<'a> ReadOnlyWorldQuery for $ro_name<'a> {}
+
+            unsafe impl<'a> WorldQuery for $ro_name<'a> {
+                type Fetch<'w> = UnsafeWorldCell<'w>;
+                type Item<'w> = $ro_name<'w>;
+                type ReadOnly = Self;
+                type State = ComponentId; // The node component ID
+
+                fn shrink<'wlong: 'wshort, 'wshort>(item: Self::Item<'wlong>) -> Self::Item<'wshort> {
+                    item
+                }
+
+                const IS_DENSE: bool = true;
+                const IS_ARCHETYPAL: bool = true;
+
+                unsafe fn init_fetch<'w>(
+                    world: UnsafeWorldCell<'w>,
+                    _state: &Self::State,
+                    _last_run: Tick,
+                    _this_run: Tick,
+                ) -> Self::Fetch<'w> {
+                    world
+                }
+
+                #[inline]
+                unsafe fn set_archetype<'w>(
+                    _fetch: &mut Self::Fetch<'w>,
+                    _state: &Self::State,
+                    _archetype: &'w Archetype,
+                    _table: &'w Table,
+                ) {
+                }
+
+                #[inline]
+                unsafe fn set_table<'w>(_fetch: &mut Self::Fetch<'w>, _state: &Self::State, _table: &'w Table) {
+                }
+
+                #[inline(always)]
+                unsafe fn fetch<'w>(
+                    fetch: &mut Self::Fetch<'w>,
+                    entity: Entity,
+                    _table_row: TableRow,
+                ) -> Self::Item<'w> {
+                    let node = NodeRef::try_new(*fetch, entity).unwrap();
+                    assert_eq!(*node.get::<NodeKind>().unwrap(), NodeKind::$kind);
+                    $ro_name(node)
+                }
+
+                fn update_component_access(_state: &Self::State, access: &mut FilteredAccess<ComponentId>) {
+                    assert!(
+                        !access.access().has_any_read(),
+                        "NodeMut conflicts with a previous access in this query. Exclusive access cannot coincide with any other accesses."
+                    );
+
+                    access.write_all()
+                }
+
+                fn update_archetype_component_access(
+                    _state: &Self::State,
+                    archetype: &Archetype,
+                    access: &mut Access<ArchetypeComponentId>,
+                ) {
+                    for component_id in archetype.components() {
+                        access.add_write(archetype.get_archetype_component_id(component_id).unwrap());
+                    }
+                }
+
+                fn init_state(world: &mut World) -> Self::State {
+                    world.init_component::<Node>()
+                }
+
+                fn matches_component_set(
+                    state: &Self::State,
+                    set_contains_id: &impl Fn(ComponentId) -> bool,
+                ) -> bool {
+                    set_contains_id(*state)
+                }
+
+                unsafe fn filter_fetch(
+                    fetch: &mut Self::Fetch<'_>,
+                    entity: Entity,
+                    _table_row: TableRow,
+                ) -> bool {
+                    let node = NodeRef::try_new(*fetch, entity).unwrap();
+                    *node.get::<NodeKind>().unwrap() == NodeKind::$kind
+                }
+            }
+        )*
+    }
+}
+
+impl_node_kind_query! {
+    ImageNodeMut, ImageNodeRef, Image;
+    TextNodeMut, TextNodeRef, Text;
+    LayoutNodeMut, LayoutNodeRef, Layout
 }
