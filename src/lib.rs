@@ -3,7 +3,7 @@ use asset::{Layout, LayoutLoader};
 use bevy::{
     app::App,
     asset::{meta::Settings, Asset, AssetApp, AssetPath, Handle, LoadContext, UntypedAssetId},
-    ecs::system::Resource,
+    ecs::{schedule::ScheduleLabel, system::Resource},
     prelude::*,
     render::view::VisibilitySystems,
     transform::TransformSystem,
@@ -11,7 +11,7 @@ use bevy::{
 };
 use builtin::{ColorAnimation, PositionAnimation, RotationAnimation, SizeAnimation};
 use components::{LoadedLayout, NodeKind};
-use input_detection::InputDetection;
+use input_detection::{controller::UiInputMap, InputDetection};
 use node::LayoutInfo;
 use serde::de::DeserializeOwned;
 use std::{
@@ -122,13 +122,15 @@ pub(crate) struct RegisteredAnimationData {
 pub(crate) struct LayoutRegistryInner {
     pub(crate) attributes: HashMap<String, RegisteredAttributeData>,
     pub(crate) animations: HashMap<String, RegisteredAnimationData>,
+    pub(crate) ignore_unknown_registry_data: bool,
 }
 
 impl LayoutRegistryInner {
-    pub fn new() -> Self {
+    pub fn new(ignore_unknown_registry_data: bool) -> Self {
         Self {
             animations: Default::default(),
             attributes: Default::default(),
+            ignore_unknown_registry_data,
         }
     }
 }
@@ -147,9 +149,11 @@ pub struct LayoutRegistry {
 }
 
 impl LayoutRegistry {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(ignore_unknown_registry_data: bool) -> Self {
         Self {
-            inner: Arc::new(RwLock::new(LayoutRegistryInner::new())),
+            inner: Arc::new(RwLock::new(LayoutRegistryInner::new(
+                ignore_unknown_registry_data,
+            ))),
         }
     }
 }
@@ -224,11 +228,37 @@ impl<'a, 'b> RestrictedLoadContext<'a, 'b> {
     }
 }
 
+/// Due to the strict siloing of layout logic, and the callback based system,
+/// yabuil's core layouting logic relies on having exclusive access to the world.
+///
+/// This schedule runs during the [`Update`] schedule, and it's recommended that if you have
+/// any logic you need to run that requires exclusive access and is related to UI to also put that
+/// in this system.
+#[derive(ScheduleLabel, Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct LayoutSchedule;
+
 /// The systems that power the layouting engine
 ///
 /// Use these to properly apply your systems/updates for the most responsive experience.
 #[derive(SystemSet, Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum LayoutSystems {
+    /// Looks over every layout that has been spawned but is waiting to be loaded into the ECS
+    /// world. This will log exactly once if a layout asset has failed to load (per component the
+    /// layout is attached to) and will recursively spawn in a UI layout once the layout has been
+    /// successfully loaded.
+    ///
+    /// This runs in the [`LayoutSchedule`]
+    SpawnLayouts,
+
+    /// Detects changes made to [`ZIndex`] components, and will regenerate a [`ZIndex`] for every
+    /// node in the tree.
+    ///
+    /// It is not recommended to change the [`ZIndex`] of nodes frequently on large layout trees
+    /// since this cannot parallelize the operation.
+    ///
+    /// This runs in the [`PostUpdate`] schedule
+    PropagateZIndex,
+
     /// Applies updates that have happened to [`Node`](node::Node) components to the
     /// transform system.
     ///
@@ -237,18 +267,61 @@ pub enum LayoutSystems {
     ///
     /// Any changes to [`Nodes`](node::Node) that take place before the [`PostUpdate`] schedule,
     /// as well as during [`PostUpdate`] but before this system, will be represented.
+    ///
+    /// This runs in the [`PostUpdate`] schedule
     PropagateToTransforms,
 
+    /// Updates the scale of layout roots to scale them to the size of the window (based on the
+    /// layout resolution).
+    ///
+    /// This runs between [`Self::PropagateToTransforms`] and [`TransformSystem::TransformPropagate`],
+    /// in the [`PostUpdate`] schedule
+    UpdateLayoutScaling,
+
+    /// Performs focus detection on layout nodes. This will call the focus/unfocus commands for
+    /// nodes whose focus state has changed.
+    ///
+    /// This runs in the [`LayoutSchedule`]
+    FocusDetection,
+
+    /// Performs UI input detection on layout nodes. This will run the appropriate
+    /// callbacks/commands for any entity that has registered callbacks, and, if the node has an
+    /// associated focus state, will only run the commands if the node is focused.
+    ///
+    /// This runs in the [`LayoutSchedule`]
+    InputDetection,
+
+    /// Performs layout node animation. This runs after all other layouting logic to ensure
+    /// that any changes intended to be represented this frame are represented.
     AnimateLayouts,
+
+    /// Applies updates that have happened to [`Node`](node::Node) components to the
+    /// [`ComputedBoundingBox`] component, if it exists on the node
+    ///
+    /// This runs after transform propagation, as transforms are used to determine the pixel
+    /// coordinates of a node
+    ///
+    /// Any changes made to the [`Node`](node::Node) component after [`Self::PropagateToTransforms`]
+    /// will not be reflected in bounding boxes
+    ///
+    /// This runs in the [`PostUpdate`] schedule
+    PropagateToBoundingBox,
+
+    /// Sets layout visibility to [`Visibility::Hidden`] when they are not set as an [`ActiveLayout`].
+    ///
+    /// This runs in the [`PostUpdate`] schedule
+    UpdateLayoutVisibility,
 }
 
 /// Plugin to add to an [`App`] that enables support for yabuil layouts
 #[derive(Default)]
-pub struct LayoutPlugin {}
+pub struct LayoutPlugin {
+    pub ignore_unknown_registry_data: bool,
+}
 
 impl Plugin for LayoutPlugin {
     fn build(&self, app: &mut App) {
-        let registry = LayoutRegistry::new();
+        let registry = LayoutRegistry::new(self.ignore_unknown_registry_data);
 
         registry.register_attribute::<InputDetection>();
         registry.register_animation::<PositionAnimation>();
@@ -268,7 +341,8 @@ impl Plugin for LayoutPlugin {
             .register_type::<ColorAnimation>()
             .register_type::<RotationAnimation>()
             .register_type::<InputDetection>()
-            .add_event::<LoadedLayout>();
+            .add_event::<LoadedLayout>()
+            .init_resource::<UiInputMap>();
 
         // Register the asset/asset loader
         app.register_asset_loader(LayoutLoader(registry.inner.clone()))
@@ -276,27 +350,60 @@ impl Plugin for LayoutPlugin {
             .init_asset::<Layout>()
             .init_asset::<LayoutAnimation>();
 
-        app.add_systems(
-            Update,
-            (
-                components::spawn_layout_system,
-                bevy::ecs::schedule::apply_deferred,
-                input_detection::update_input_detection_nodes,
+        app.add_systems(Update, |world: &mut World| {
+            world.run_schedule(LayoutSchedule)
+        });
+
+        app.edit_schedule(LayoutSchedule, |sched| {
+            sched.configure_sets(
+                (
+                    LayoutSystems::SpawnLayouts,
+                    LayoutSystems::FocusDetection,
+                    LayoutSystems::InputDetection,
+                    LayoutSystems::AnimateLayouts,
+                )
+                    .chain(),
+            );
+
+            sched.add_systems((
+                components::spawn_layout_system.in_set(LayoutSystems::SpawnLayouts),
+                input_detection::controller::update_focus_nodes
+                    .in_set(LayoutSystems::FocusDetection),
+                input_detection::controller::update_input_detection
+                    .in_set(LayoutSystems::InputDetection),
                 animation::update_animations.in_set(LayoutSystems::AnimateLayouts),
-            )
-                .chain(),
-        )
-        .add_systems(
-            PostUpdate,
-            (
-                node::refresh_z_index.before(node::propagate_to_transforms),
-                node::propagate_to_transforms.before(components::update_ui_layout_transform),
-                components::update_ui_layout_transform.before(TransformSystem::TransformPropagate),
+            ));
+        });
+
+        app.edit_schedule(PostUpdate, |sched| {
+            sched.configure_sets(
+                (
+                    LayoutSystems::PropagateZIndex,
+                    LayoutSystems::PropagateToTransforms,
+                    LayoutSystems::UpdateLayoutScaling,
+                    TransformSystem::TransformPropagate,
+                    LayoutSystems::PropagateToBoundingBox,
+                )
+                    .chain(),
+            );
+
+            sched.configure_sets(
+                (
+                    LayoutSystems::UpdateLayoutVisibility,
+                    VisibilitySystems::VisibilityPropagate,
+                )
+                    .chain(),
+            );
+
+            sched.add_systems((
+                node::refresh_z_index.in_set(LayoutSystems::PropagateZIndex),
+                node::propagate_to_transforms.in_set(LayoutSystems::PropagateToTransforms),
+                components::update_ui_layout_transform.in_set(LayoutSystems::UpdateLayoutScaling),
                 components::update_ui_layout_visibility
-                    .before(VisibilitySystems::VisibilityPropagate),
-                node::propagate_to_bounding_box.after(TransformSystem::TransformPropagate),
-            ),
-        );
+                    .in_set(LayoutSystems::UpdateLayoutVisibility),
+                node::propagate_to_bounding_box.in_set(LayoutSystems::PropagateToBoundingBox),
+            ));
+        });
     }
 }
 

@@ -75,7 +75,7 @@
             }
           },
           {
-            "timestamp_ms": 60,
+            "timestamp_ms": 1000,
             "targets": {
               "Position": [0.0, 0.0]
             }

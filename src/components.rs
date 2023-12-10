@@ -10,6 +10,7 @@ use bevy::{
     },
     window::{PrimaryWindow, WindowRef},
 };
+use smallvec::SmallVec;
 use thiserror::Error;
 
 use crate::{asset::Layout, views::NodeEntityMut};
@@ -122,12 +123,11 @@ pub enum SpawnLayoutError {
     NotLoaded,
 }
 
-pub(crate) fn spawn_layout_system(
-    mut commands: Commands,
-    mut pending: Query<PendingRootQuery>,
-    assets: Res<AssetServer>,
-) {
-    for mut root in pending.iter_mut() {
+pub(crate) fn spawn_layout_system(world: &mut World) {
+    let assets = world.resource::<AssetServer>().clone();
+
+    let mut ready: SmallVec<[(Entity, Handle<Layout>); 4]> = SmallVec::new();
+    for mut root in world.query::<PendingRootQuery>().iter_mut(world) {
         if *root.status == PendingStatus::Failed {
             continue;
         }
@@ -164,31 +164,31 @@ pub(crate) fn spawn_layout_system(
             _ => continue,
         }
 
-        let entity = root.entity;
+        ready.push((root.entity, root_handle));
+    }
 
-        commands.add(move |world: &mut World| {
-            let result = spawn_layout(world, entity, root_handle.clone(), |node, mut child| {
-                for attribute in node.attributes.iter() {
-                    attribute.apply(child.reborrow());
-                }
-            });
-
-            let mut root = world.entity_mut(entity);
-
-            if let Err(e) = result {
-                log::error!("Failed to load layout: {e}");
-                *root.get_mut::<PendingStatus>().unwrap() = PendingStatus::Failed;
-            } else {
-                root.remove::<PendingStatus>();
-                let callback = root
-                    .get_mut::<OnLoadCallback>()
-                    .and_then(|mut cb| cb.0.take());
-                root.remove::<OnLoadCallback>();
-                if let Some(cb) = callback {
-                    cb(NodeEntityMut::from_entity_world_mut(root));
-                }
+    for (entity, root_handle) in ready {
+        let result = spawn_layout(world, entity, root_handle.clone(), |node, mut child| {
+            for attribute in node.attributes.iter() {
+                attribute.apply(child.reborrow());
             }
         });
+
+        let mut root = world.entity_mut(entity);
+
+        if let Err(e) = result {
+            log::error!("Failed to load layout: {e}");
+            *root.get_mut::<PendingStatus>().unwrap() = PendingStatus::Failed;
+        } else {
+            root.remove::<PendingStatus>();
+            let callback = root
+                .get_mut::<OnLoadCallback>()
+                .and_then(|mut cb| cb.0.take());
+            root.remove::<OnLoadCallback>();
+            if let Some(cb) = callback {
+                cb(NodeEntityMut::from_entity_world_mut(root));
+            }
+        }
     }
 }
 

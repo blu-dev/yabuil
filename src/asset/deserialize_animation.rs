@@ -99,9 +99,13 @@ impl<'de> Visitor<'de> for TargetListSeed<'de> {
                             .map_err(<A::Error as serde::de::Error>::custom)?,
                     );
                 }
+                None if self.0.ignore_unknown_registry_data => {
+                    log::trace!("Ignoring unregistered LayoutAnimationTarget {key}");
+                    let _ = map.next_value::<serde_value::Value>()?;
+                }
                 None => {
                     return Err(<A::Error as serde::de::Error>::custom(format!(
-                        "LayoutanimationTarget {key} is not registered"
+                        "LayoutAnimationTarget {key} is not registered"
                     )));
                 }
             }

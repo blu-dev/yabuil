@@ -52,6 +52,10 @@ impl<'de> Visitor<'de> for AttributeMapVisitor<'de> {
                         .map_err(<A::Error as serde::de::Error>::custom)?;
                     list.push(value);
                 }
+                None if self.0.ignore_unknown_registry_data => {
+                    log::trace!("Ignoring unknown LayoutAttribute {key}");
+                    let _ = map.next_value::<serde_value::Value>()?;
+                }
                 None => {
                     return Err(<A::Error as serde::de::Error>::custom(format!(
                         "LayoutNode attribute '{key}' was not registered"

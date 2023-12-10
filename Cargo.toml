@@ -26,6 +26,7 @@ thiserror.workspace = true
 indexmap = { version = "2.1.0", features = ["serde"] }
 camino = "1.1.6"
 paste = "1.0.14"
+smallvec = "1.11.2"
 
 [dev-dependencies]
 bevy-inspector-egui = "0.21"

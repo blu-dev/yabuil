@@ -12,6 +12,7 @@ use bevy::{
 };
 
 use camino::Utf8Path;
+use smallvec::SmallVec;
 use thiserror::Error;
 
 use crate::{
@@ -182,6 +183,20 @@ impl<'w> NodeEntityMut<'w> {
             world: self.world,
             id: child_id,
         })
+    }
+
+    pub fn visit_children(&mut self, mut f: impl FnMut(NodeEntityMut)) {
+        let children: SmallVec<[Entity; 8]> = self
+            .get::<Children>()
+            .iter()
+            .flat_map(|children| children.iter().copied())
+            .collect();
+        for child in children {
+            f(NodeEntityMut {
+                world: self.world,
+                id: child,
+            });
+        }
     }
 
     #[track_caller]
@@ -417,6 +432,25 @@ impl<'w> NodeRef<'w> {
         Ok(Self { world, id })
     }
 
+    pub fn node_id(&self) -> &LayoutNodeId {
+        self.get::<LayoutNodeId>()
+            .expect("node should have node id")
+    }
+
+    pub fn layout_id(&self) -> LayoutId {
+        self.get::<LayoutId>()
+            .copied()
+            .expect("node should have layout id")
+    }
+
+    pub fn node_data(&self) -> &Node {
+        self.get::<Node>().expect("node should have node data")
+    }
+
+    pub fn node_kind(&self) -> NodeKind {
+        *self.get::<NodeKind>().expect("node should have node kind")
+    }
+
     pub fn get_image(&self) -> Option<ImageNodeRef<'w>> {
         (*self.get::<NodeKind>().unwrap() == NodeKind::Image).then(|| ImageNodeRef(*self))
     }
@@ -503,6 +537,25 @@ impl<'w> NodeMut<'w> {
         }
 
         Ok(Self { world, id })
+    }
+
+    pub fn node_id(&self) -> &LayoutNodeId {
+        self.get::<LayoutNodeId>()
+            .expect("node should have node id")
+    }
+
+    pub fn layout_id(&self) -> LayoutId {
+        self.get::<LayoutId>()
+            .copied()
+            .expect("node should have layout id")
+    }
+
+    pub fn node_data(&self) -> &Node {
+        self.get::<Node>().expect("node should have node data")
+    }
+
+    pub fn node_kind(&self) -> NodeKind {
+        *self.get::<NodeKind>().expect("node should have node kind")
     }
 
     pub fn get_image<'a>(&'a mut self) -> Option<ImageNodeMut<'a>> {
@@ -603,6 +656,7 @@ impl<'w> From<NodeEntityMut<'w>> for NodeMut<'w> {
     }
 }
 
+#[derive(Deref)]
 pub struct ImageNodeRef<'w>(NodeRef<'w>);
 
 impl ImageNodeRef<'_> {
@@ -621,6 +675,7 @@ impl ImageNodeRef<'_> {
     }
 }
 
+#[derive(Deref, DerefMut)]
 pub struct ImageNodeMut<'w>(NodeMut<'w>);
 
 impl ImageNodeMut<'_> {
@@ -655,6 +710,7 @@ impl ImageNodeMut<'_> {
     }
 }
 
+#[derive(Deref)]
 pub struct TextNodeRef<'w>(NodeRef<'w>);
 
 impl TextNodeRef<'_> {
@@ -676,6 +732,7 @@ impl TextNodeRef<'_> {
     }
 }
 
+#[derive(Deref, DerefMut)]
 pub struct TextNodeMut<'w>(NodeMut<'w>);
 
 impl TextNodeMut<'_> {
@@ -721,6 +778,7 @@ pub enum LayoutAnimationError {
     NoAnimation(String),
 }
 
+#[derive(Deref)]
 pub struct LayoutNodeRef<'w>(NodeRef<'w>);
 
 impl LayoutNodeRef<'_> {
@@ -741,6 +799,7 @@ impl LayoutNodeRef<'_> {
     }
 }
 
+#[derive(Deref, DerefMut)]
 pub struct LayoutNodeMut<'w>(NodeMut<'w>);
 
 impl LayoutNodeMut<'_> {

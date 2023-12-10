@@ -1,11 +1,4 @@
-use bevy::{
-    ecs::query::WorldQuery,
-    math::vec2,
-    prelude::*,
-    render::camera::{ManualTextureViews, RenderTarget},
-    utils::HashSet,
-    window::{PrimaryWindow, WindowRef},
-};
+use bevy::{ecs::query::WorldQuery, math::vec2, prelude::*, utils::HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -187,7 +180,7 @@ impl ComputedBoundingBox {
 }
 
 #[derive(Component, Clone, Reflect)]
-pub(crate) struct LayoutHandle(pub Handle<Layout>);
+pub struct LayoutHandle(pub Handle<Layout>);
 
 /// Component that contains information about a layout
 #[derive(Component, Copy, Clone, Reflect)]
@@ -299,13 +292,9 @@ pub(crate) struct BoundingBoxPropagationQuery {
 }
 
 pub(crate) fn propagate_to_bounding_box(
-    mut nodes: Query<BoundingBoxPropagationQuery, Changed<Node>>,
+    mut nodes: Query<BoundingBoxPropagationQuery, Or<(Changed<Node>, Changed<GlobalTransform>)>>,
     parents: Query<&Parent>,
-    cameras: Query<&Camera>,
-    images: Res<Assets<Image>>,
-    manual_texture_views: Res<ManualTextureViews>,
-    windows: Query<&Window>,
-    primary_window: Query<&Window, With<PrimaryWindow>>,
+    cameras: Query<(&Camera, &GlobalTransform)>,
 ) {
     nodes.par_iter_mut().for_each(|mut node| {
         let mut bounding_box = ComputedBoundingBox::default();
@@ -317,75 +306,44 @@ pub(crate) fn propagate_to_bounding_box(
             return;
         };
 
-        let Ok(camera) = cameras.get(parent.get()) else {
+        let Ok((camera, camera_transform)) = cameras.get(parent.get()) else {
             log::warn!("Layout {layout_id:?} is not the direct child of a camera");
             return;
         };
 
-        let size = match &camera.target {
-            RenderTarget::Window(WindowRef::Primary) => {
-                let Ok(window) = primary_window.get_single() else {
-                    log::warn!("Failed to get primary window");
-                    return;
-                };
-
-                Vec2::new(window.width(), window.height())
-            }
-            RenderTarget::Window(WindowRef::Entity(entity)) => {
-                let Ok(window) = windows.get(*entity) else {
-                    log::warn!("Failed to get window {entity:?}");
-                    return;
-                };
-
-                Vec2::new(window.width(), window.height())
-            }
-            RenderTarget::Image(image) => {
-                let Some(image) = images.get(image.id()) else {
-                    log::warn!("Failed to render target image");
-                    return;
-                };
-
-                image.size_f32()
-            }
-            RenderTarget::TextureView(view) => {
-                let Some(target) = manual_texture_views.get(view) else {
-                    log::warn!("Failed to render target view");
-                    return;
-                };
-
-                target.size.as_vec2()
-            }
-        };
-
-        let mut screen_coords = node.transform.translation().xy() + size / 2.0;
-        screen_coords.y = size.y - screen_coords.y;
-
         let half_extent = node.node.size / 2.0;
-
-        bounding_box.top_left = node
+        let top_left = node
             .transform
-            .transform_point((half_extent * Vec2::NEG_ONE).extend(0.0))
-            .xy()
-            - node.transform.translation().xy()
-            + screen_coords;
-
-        bounding_box.top_right = node
+            .transform_point((half_extent * Vec2::NEG_ONE).extend(0.0));
+        let top_right = node
             .transform
-            .transform_point((half_extent * vec2(1.0, -1.0)).extend(0.0))
-            .xy()
-            - node.transform.translation().xy()
-            + screen_coords;
-
-        bounding_box.bottom_left = node
+            .transform_point((half_extent * vec2(1.0, -1.0)).extend(0.0));
+        let bottom_left = node
             .transform
-            .transform_point((half_extent * vec2(-1.0, 1.0)).extend(0.0))
-            .xy()
-            - node.transform.translation().xy()
-            + screen_coords;
+            .transform_point((half_extent * vec2(-1.0, 1.0)).extend(0.0));
+        let bottom_right = node.transform.transform_point(half_extent.extend(0.0));
 
-        bounding_box.bottom_right = node.transform.transform_point(half_extent.extend(0.0)).xy()
-            - node.transform.translation().xy()
-            + screen_coords;
+        let node_pos = node.transform.translation();
+        let center = camera
+            .world_to_viewport(camera_transform, node_pos)
+            .unwrap_or_default();
+        let top_left = camera
+            .world_to_viewport(camera_transform, top_left)
+            .unwrap_or_default();
+        let top_right = camera
+            .world_to_viewport(camera_transform, top_right)
+            .unwrap_or_default();
+        let bottom_left = camera
+            .world_to_viewport(camera_transform, bottom_left)
+            .unwrap_or_default();
+        let bottom_right = camera
+            .world_to_viewport(camera_transform, bottom_right)
+            .unwrap_or_default();
+
+        bounding_box.top_left = top_left;
+        bounding_box.top_right = top_right;
+        bounding_box.bottom_left = bottom_left;
+        bounding_box.bottom_right = bottom_right;
 
         bounding_box.rotation = node
             .transform
@@ -394,7 +352,7 @@ pub(crate) fn propagate_to_bounding_box(
             .to_axis_angle()
             .1;
         bounding_box.size = node.node.size * node.transform.to_scale_rotation_translation().0.xy();
-        bounding_box.center = screen_coords;
+        bounding_box.center = center;
 
         *node.bounding_box = bounding_box;
     });
