@@ -1,6 +1,6 @@
 use std::any::TypeId;
 
-use bevy::{prelude::*, utils::hashbrown::HashMap};
+use bevy::{prelude::*, utils::hashbrown::HashMap, ecs::world::unsafe_world_cell::UnsafeWorldCell};
 use camino::{Utf8Path, Utf8PathBuf};
 
 use crate::{node::LayoutHandle, LayoutNodeId, views::NodeMut};
@@ -45,7 +45,7 @@ pub struct DynamicAnimationTarget {
     data: *mut (),
     // SAFETY: The caller must ensure that the type of data being passed into BOTH parameters
     //          is the same type that created this animation node.
-    interpolate: unsafe fn(*const (), Option<*const ()>, NodeMut, f32),
+    interpolate: unsafe fn(*const (), Option<*const ()>, NodeMut, ResourceRestrictedWorld, f32),
 }
 
 unsafe impl Send for DynamicAnimationTarget {}
@@ -62,10 +62,10 @@ impl DynamicAnimationTarget {
             data: (Box::leak(Box::new(data)) as *mut T).cast::<()>(),
             // We cannot create an unsafe closure, but this is good enough for our purposes since
             // we are coallescing it into an unsafe function pointer
-            interpolate: |current, prev, node, progress| unsafe {
+            interpolate: |current, prev, node, world, progress| unsafe {
                 let current = &*current.cast::<T>();
                 let prev = prev.map(|prev| &*prev.cast::<T>());
-                current.interpolate(prev, node, progress);
+                current.interpolate(prev, node, world, progress);
             },
         }
     }
@@ -86,16 +86,17 @@ impl DynamicAnimationTarget {
         self.type_info.type_id == TypeId::of::<T>()
     }
 
-    pub fn interpolate_from_start(&self, node: NodeMut, progress: f32) {
+    pub fn interpolate_from_start(&self, node: NodeMut, world: ResourceRestrictedWorld, progress: f32) {
         // SAFETY: we are providing the owned pointer that we created ont ype construction, it is
         // going to be the same type
-        unsafe { (self.interpolate)(self.data, None, node, progress) }
+        unsafe { (self.interpolate)(self.data, None, node, world, progress) }
     }
 
     pub fn interpolate_with_previous(
         &self,
         previous: &DynamicAnimationTarget,
         node: NodeMut,
+        world: ResourceRestrictedWorld,
         progress: f32,
     ) {
         #[inline(never)]
@@ -111,36 +112,7 @@ impl DynamicAnimationTarget {
         // SAFETY: we have ensured that the type T is the same type that is used to represent
         // this target
         unsafe {
-            (self.interpolate)(self.data, Some(previous.data), node, progress);
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn interpolate<T: TypePath + 'static>(
-        &self,
-        previous: Option<&T>,
-        node: NodeMut,
-        progress: f32,
-    ) {
-        #[inline(never)]
-        #[cold]
-        fn panic_wrong_type(got: &'static str, expected: &'static str) {
-            panic!("Attempting to interpolate incorrect type. Expected type {expected}, got type {got}");
-        }
-
-        if TypeId::of::<T>() != self.type_info.type_id {
-            panic_wrong_type(T::short_type_path(), self.type_info.type_path);
-        }
-
-        // SAFETY: we have ensured that the type T is the same type that is used to represent
-        // this target
-        unsafe {
-            (self.interpolate)(
-                self.data,
-                previous.map(|prev| (prev as *const T).cast()),
-                node,
-                progress,
-            );
+            (self.interpolate)(self.data, Some(previous.data), node, world, progress);
         }
     }
 }
@@ -227,10 +199,36 @@ pub(crate) struct RawLayoutAnimations(
 #[derive(Asset, Deref, DerefMut, TypePath)]
 pub struct LayoutAnimation(pub(crate) HashMap<Utf8PathBuf, Keyframes>);
 
+pub struct ResourceRestrictedWorld<'w>(UnsafeWorldCell<'w>);
+
+impl ResourceRestrictedWorld<'_> {
+    #[track_caller]
+    pub fn resource<R: Resource>(&self) -> &R {
+        self.get_resource::<R>().unwrap()
+    }
+
+    pub fn get_resource<R: Resource>(&self) -> Option<&R> {
+        unsafe {
+            self.0.get_resource::<R>()
+        }
+    }
+
+    #[track_caller]
+    pub fn resource_mut<R: Resource>(&mut self) -> Mut<'_, R> {
+        self.get_resource_mut::<R>().unwrap()
+    }
+
+    pub fn get_resource_mut<R: Resource>(&mut self) -> Option<Mut<'_, R>> {
+        unsafe {
+            self.0.get_resource_mut::<R>()
+        }
+    }
+}
+
 pub trait LayoutAnimationTarget: TypePath + Send + Sync + 'static {
     const NAME: &'static str;
 
-    fn interpolate(&self, previous: Option<&Self>, node: NodeMut, progress: f32);
+    fn interpolate(&self, previous: Option<&Self>, node: NodeMut, world: ResourceRestrictedWorld<'_>, progress: f32);
 }
 
 #[derive(Debug)]
@@ -587,7 +585,7 @@ pub(crate) fn update_animations(world: &mut World) {
 
                             let progress = kf.time_scale.map(progress.clamp(0.0, 1.0));
 
-                            kf.target.interpolate_from_start(node.reborrow(), progress);
+                            kf.target.interpolate_from_start(node.reborrow(), ResourceRestrictedWorld(world), progress);
                         } else {
                             let prev_kf = &channel.keyframes[index - 1];
                             // doing a non saturating sub here is safe since we sort the 
@@ -601,7 +599,7 @@ pub(crate) fn update_animations(world: &mut World) {
 
                             let progress = kf.time_scale.map(progress.clamp(0.0, 1.0));
 
-                            kf.target.interpolate_with_previous(&prev_kf.target, node.reborrow(), progress);
+                            kf.target.interpolate_with_previous(&prev_kf.target, node.reborrow(), ResourceRestrictedWorld(world), progress);
                         }
                     }
                 }
