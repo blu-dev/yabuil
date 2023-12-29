@@ -59,6 +59,20 @@ impl FocusableNode {
         })
     }
 
+    pub fn on_focus(&mut self, command: impl FocusDetectionCommand) {
+        match &mut self.0 {
+            FocusableNodeInternal::Local { focus, .. } => focus.push(Box::new(command)),
+            FocusableNodeInternal::Global { focus, .. } => focus.push(Box::new(command)),
+        }
+    }
+
+    pub fn on_unfocus(&mut self, command: impl FocusDetectionCommand) {
+        match &mut self.0 {
+            FocusableNodeInternal::Local { unfocus, .. } => unfocus.push(Box::new(command)),
+            FocusableNodeInternal::Global { unfocus, .. } => unfocus.push(Box::new(command)),
+        }
+    }
+
     pub fn is_focus(&self) -> bool {
         match &self.0 {
             FocusableNodeInternal::Global { focused, .. } => *focused,
