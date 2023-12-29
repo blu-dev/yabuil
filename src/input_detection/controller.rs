@@ -479,5 +479,9 @@ pub(crate) fn update_input_detection(world: &mut World) {
         for command in callbacks.commands.get_mut(&button).unwrap().iter_mut() {
             command.apply(source, node.reborrow());
         }
+        *node
+            .get_mut::<UiInputCommands>()
+            .unwrap()
+            .bypass_change_detection() = callbacks;
     }
 }
