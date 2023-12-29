@@ -131,7 +131,14 @@ impl FocusableNode {
 
     pub fn unfocus_all(&mut self) {
         match &mut self.0 {
-            FocusableNodeInternal::Global { focused, .. } => *focused = false,
+            FocusableNodeInternal::Global {
+                focused,
+                was_focus_changed,
+                ..
+            } => {
+                *was_focus_changed = *focused;
+                *focused = false;
+            }
             FocusableNodeInternal::Local {
                 sources, removed, ..
             } => {
