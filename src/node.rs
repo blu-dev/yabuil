@@ -97,6 +97,9 @@ pub struct Node {
     ///
     /// The rotation pivot is always the center of the node
     pub rotation: f32,
+
+    /// The scale of the node
+    pub scale: Vec2,
 }
 
 impl Node {
@@ -106,11 +109,12 @@ impl Node {
             position: node.position,
             size: node.size,
             rotation: node.rotation,
+            scale: Vec2::ONE,
         }
     }
 
     pub fn calculate_position(&self, anchor: Anchor) -> Vec2 {
-        self.position + self.size * (anchor.as_vec2() - self.anchor.as_vec2())
+        self.position + self.size * self.scale * (anchor.as_vec2() - self.anchor.as_vec2())
     }
 }
 
@@ -254,6 +258,8 @@ pub(crate) fn propagate_to_transforms(
         if let Some(layout_info) = node.layout_info {
             transform.scale = layout_info.calculate_self_node_scale(node.node).extend(1.0);
         }
+
+        transform.scale *= node.node.scale.extend(1.0);
 
         let world_pos = if let Ok(parent_layout) = layout_info.get(node.parent.get()) {
             parent_layout.get_child_world_position(

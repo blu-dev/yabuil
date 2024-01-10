@@ -271,6 +271,7 @@ pub fn spawn_layout(
                 position: Vec2::ZERO,
                 size: asset.canvas_size.as_vec2(),
                 rotation: 0.0,
+                scale: Vec2::ONE,
             },
             NodeKind::Layout,
             LayoutId(root),

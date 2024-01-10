@@ -9,7 +9,9 @@ use bevy::{
     transform::TransformSystem,
     utils::HashMap,
 };
-use builtin::{ColorAnimation, PositionAnimation, RotationAnimation, SizeAnimation};
+use builtin::{
+    ColorAnimation, PositionAnimation, RotationAnimation, ScaleAnimation, SizeAnimation,
+};
 use components::{LoadedLayout, NodeKind};
 use input_detection::{controller::UiInputMap, InputDetection};
 use node::LayoutInfo;
@@ -326,6 +328,7 @@ impl Plugin for LayoutPlugin {
         registry.register_attribute::<InputDetection>();
         registry.register_animation::<PositionAnimation>();
         registry.register_animation::<SizeAnimation>();
+        registry.register_animation::<ScaleAnimation>();
         registry.register_animation::<ColorAnimation>();
         registry.register_animation::<RotationAnimation>();
 
@@ -338,6 +341,7 @@ impl Plugin for LayoutPlugin {
             .register_type::<LayoutNodeId>()
             .register_type::<PositionAnimation>()
             .register_type::<SizeAnimation>()
+            .register_type::<ScaleAnimation>()
             .register_type::<ColorAnimation>()
             .register_type::<RotationAnimation>()
             .register_type::<InputDetection>()

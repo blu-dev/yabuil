@@ -67,6 +67,9 @@ pub struct PositionAnimation(Vec2);
 #[derive(Deserialize, Serialize, Reflect)]
 pub struct SizeAnimation(Vec2);
 
+#[derive(Deserialize, Serialize, Reflect)]
+pub struct ScaleAnimation(Vec2);
+
 impl LayoutAnimationTarget for PositionAnimation {
     const NAME: &'static str = "Position";
 
@@ -102,6 +105,25 @@ impl LayoutAnimationTarget for SizeAnimation {
         };
 
         node.get_mut::<Node>().unwrap().size = size;
+    }
+}
+
+impl LayoutAnimationTarget for ScaleAnimation {
+    const NAME: &'static str = "Scale";
+
+    fn interpolate(
+        &self,
+        previous: Option<&Self>,
+        mut node: NodeMut,
+        _world: ResourceRestrictedWorld<'_>,
+        progress: f32,
+    ) {
+        let scale = match previous {
+            Some(Self(scale)) => *scale * (1.0 - progress) + self.0 * progress,
+            None => self.0,
+        };
+
+        node.get_mut::<Node>().unwrap().scale = scale;
     }
 }
 
