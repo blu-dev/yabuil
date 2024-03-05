@@ -210,6 +210,12 @@ pub struct LayoutInfo {
 
     /// The size of the layout, taken directly from the asset
     pub(crate) canvas_size: Vec2,
+
+    /// Where to base child node's positions on.
+    ///
+    /// For layouts, this defaults to [`Anchor::TopLeft`], but for group nodes
+    /// this can optionally be specified as part of the node
+    pub(crate) child_anchor: Anchor,
 }
 
 impl LayoutInfo {
@@ -223,7 +229,10 @@ impl LayoutInfo {
     /// This method's return value should ONLY change at runtime when `Node` is changed, therefore propagation
     /// only occurs when a child's `Node` is changed.
     pub fn get_child_world_position(&self, child: &Node, anchor: Anchor) -> Vec2 {
-        let position = child.calculate_position(anchor) - self.canvas_size / 2.0;
+        let center = self.canvas_size / 2.0;
+        let child_anchor = center + self.canvas_size * self.child_anchor.as_vec2();
+
+        let position = child_anchor + child.calculate_position(anchor) - self.canvas_size / 2.0;
         position * Vec2::new(1.0, -1.0)
     }
 

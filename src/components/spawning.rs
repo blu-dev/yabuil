@@ -7,7 +7,7 @@ use bevy::{
 
 use crate::{
     animation::LayoutAnimationPlaybackState,
-    asset::{ImageNodeData, Layout, LayoutNode, TextNodeData},
+    asset::{GroupNodeData, ImageNodeData, Layout, LayoutNode, TextNodeData},
     node::{LayoutHandle, LayoutInfo, ZIndex},
     views::NodeEntityMut,
     LayoutId, LayoutNodeId,
@@ -165,6 +165,7 @@ fn spawn_layout_node(
                 resolution_scale: context.parent_layout.get_resolution().as_vec2()
                     / asset.get_resolution().as_vec2(),
                 canvas_size: asset.canvas_size.as_vec2(),
+                child_anchor: crate::node::Anchor::TopLeft,
             },
             LayoutHandle(layout.handle.clone()),
             playback_state,
@@ -192,7 +193,7 @@ fn spawn_layout_node(
 fn spawn_group_node(
     mut context: SpawnNodeContext<'_>,
     node: &LayoutNode,
-    group: &[LayoutNode],
+    group: &GroupNodeData,
 ) -> Result<Entity, SpawnLayoutError> {
     let parent = context
         .world
@@ -208,6 +209,7 @@ fn spawn_group_node(
             LayoutInfo {
                 resolution_scale: Vec2::ONE,
                 canvas_size: node.size,
+                child_anchor: group.child_anchor,
             },
         ))
         .id();
@@ -216,13 +218,13 @@ fn spawn_group_node(
 
     let parent_id = node.id.as_str();
 
-    for node in group.iter() {
+    for node in group.nodes.iter() {
         let child = spawn_node(context.reborrow(parent_id), node)?;
         context.world.entity_mut(parent).add_child(child);
         children.push(child);
     }
 
-    for (node, child) in group.iter().zip(children.into_iter()) {
+    for (node, child) in group.nodes.iter().zip(children.into_iter()) {
         let child = NodeEntityMut::new(context.world, child);
         (context.visitor)(node, child);
     }
@@ -280,6 +282,7 @@ pub fn spawn_layout(
             LayoutInfo {
                 resolution_scale: Vec2::ONE,
                 canvas_size: asset.canvas_size.as_vec2(),
+                child_anchor: crate::node::Anchor::TopLeft,
             },
             LayoutHandle(handle.clone()),
             playback_state,

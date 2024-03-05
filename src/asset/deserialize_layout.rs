@@ -17,13 +17,17 @@ use crate::{
     DynamicAttribute, LayoutRegistryInner,
 };
 
-use super::{deserialize_animation::RawLayoutAnimationsSeed, Layout, LayoutNode, LayoutNodeInner};
+use super::{
+    deserialize_animation::RawLayoutAnimationsSeed, GroupNodeData, Layout, LayoutNode,
+    LayoutNodeInner,
+};
 
 use super::helpers::{decl_ident_parse, decl_struct_parse};
 
 decl_ident_parse!(variant LayoutNode(Null, Image, Text, Layout, Group));
 decl_ident_parse!(field Layout(Resolution, CanvasSize, Nodes, Animations));
 decl_ident_parse!(field Node(Id, Position, Size, Rotation, Anchor, Attributes, NodeKind, NodeData));
+decl_ident_parse!(field GroupNode(ChildAnchor, Nodes));
 
 struct AttributeMapVisitor<'de>(&'de LayoutRegistryInner);
 
@@ -81,6 +85,45 @@ impl<'de> DeserializeSeed<'de> for AttributeDeserializer<'de> {
     }
 }
 
+struct GroupNodeSeed<'de>(&'de LayoutRegistryInner);
+
+impl<'de> Visitor<'de> for GroupNodeSeed<'de> {
+    type Value = GroupNodeData;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("struct GroupNodeData")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::MapAccess<'de>,
+    {
+        decl_struct_parse!(
+            self, GroupNodeFieldId, map;
+            (child_anchor => Anchor),
+            (passthrough nodes => NodeListSeed);
+            require(nodes);
+            default(child_anchor)
+        );
+
+        Ok(Self::Value {
+            child_anchor,
+            nodes,
+        })
+    }
+}
+
+impl<'de> DeserializeSeed<'de> for GroupNodeSeed<'de> {
+    type Value = GroupNodeData;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_map(self)
+    }
+}
+
 struct NodeSeed<'de>(&'de LayoutRegistryInner);
 
 impl<'de> Visitor<'de> for NodeSeed<'de> {
@@ -135,7 +178,7 @@ impl<'de> Visitor<'de> for NodeSeed<'de> {
                         .map_err(<A::Error as serde::de::Error>::custom)?,
                 ),
                 LayoutNodeVariantId::Group => LayoutNodeInner::Group(
-                    NodeListSeed(self.0)
+                    GroupNodeSeed(self.0)
                         .deserialize(ValueDeserializer::<A::Error>::new(node_data))
                         .map_err(<A::Error as serde::de::Error>::custom)?,
                 ),

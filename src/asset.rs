@@ -79,7 +79,7 @@ impl Layout {
                     return Some(node);
                 } else {
                     match &node.inner {
-                        LayoutNodeInner::Group(group_nodes) => nodes = group_nodes,
+                        LayoutNodeInner::Group(group_data) => nodes = &group_data.nodes,
                         _ => return None,
                     }
                 }
@@ -108,7 +108,7 @@ impl Layout {
                     return Some(node);
                 } else {
                     match &mut node.inner {
-                        LayoutNodeInner::Group(group_nodes) => nodes = group_nodes,
+                        LayoutNodeInner::Group(group_data) => nodes = &mut group_data.nodes,
                         _ => return None,
                     }
                 }
@@ -131,8 +131,8 @@ fn visit_node_dependencies(node: &LayoutNode, visit: &mut impl FnMut(bevy::asset
         LayoutNodeInner::Image(data) => visit(data.handle.id().untyped()),
         LayoutNodeInner::Text(data) => visit(data.handle.id().untyped()),
         LayoutNodeInner::Layout(data) => visit(data.handle.id().untyped()),
-        LayoutNodeInner::Group(nodes) => {
-            for node in nodes.iter() {
+        LayoutNodeInner::Group(data) => {
+            for node in data.nodes.iter() {
                 visit_node_dependencies(node, visit)
             }
         }
@@ -225,6 +225,12 @@ pub struct LayoutNodeData {
     pub handle: Handle<Layout>,
 }
 
+#[derive(Default)]
+pub struct GroupNodeData {
+    pub child_anchor: Anchor,
+    pub nodes: Vec<LayoutNode>,
+}
+
 /// First-class node data, guaranteed to be supported by yabuil
 #[derive(Default)]
 pub enum LayoutNodeInner {
@@ -251,7 +257,7 @@ pub enum LayoutNodeInner {
     /// This is an inlined group of other nodes
     ///
     /// This should primarily be used to make animation easier
-    Group(Vec<LayoutNode>),
+    Group(GroupNodeData),
 }
 
 impl LayoutNodeInner {
@@ -328,7 +334,7 @@ fn initialize_node(node: &mut LayoutNode, context: &mut RestrictedLoadContext<'_
         }
         LayoutNodeInner::Layout(data) => data.handle = context.load(data.path.clone()),
         LayoutNodeInner::Group(group) => {
-            for node in group.iter_mut() {
+            for node in group.nodes.iter_mut() {
                 initialize_node(node, context);
             }
         }
