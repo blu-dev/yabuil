@@ -1035,6 +1035,10 @@ unsafe impl<'a> WorldQuery for NodeRef<'a> {
     }
 }
 
+unsafe impl<'a> QueryData for NodeMut<'a> {
+    type ReadOnly = NodeRef<'a>;
+}
+
 unsafe impl<'a> WorldQuery for NodeMut<'a> {
     type Fetch<'w> = UnsafeWorldCell<'w>;
     type Item<'w> = NodeMut<'w>;
