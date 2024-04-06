@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use bevy::{
     asset::{LoadState, RecursiveDependencyLoadState},
-    ecs::query::WorldQuery,
+    ecs::query::{QueryData, WorldQuery},
     prelude::*,
     render::{
         camera::{ManualTextureViews, RenderTarget},
@@ -108,8 +108,8 @@ impl LayoutBundle {
     }
 }
 
-#[derive(WorldQuery)]
-#[world_query(mutable)]
+#[derive(QueryData)]
+#[query_data(mutable)]
 pub(crate) struct PendingRootQuery {
     pub entity: Entity,
     pub root: &'static RootNode,

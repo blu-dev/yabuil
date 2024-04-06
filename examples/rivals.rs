@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 use bevy::{
-    core_pipeline::clear_color::ClearColorConfig,
     prelude::*,
     render::texture::{ImageLoaderSettings, ImageSampler},
 };
@@ -66,7 +65,7 @@ fn update_menu_buttons(
     mut commands: Commands,
     menu_move_sfx: Res<MenuMoveSfx>,
     gamepads: Res<Gamepads>,
-    buttons: Res<Input<GamepadButton>>,
+    buttons: Res<ButtonInput<GamepadButton>>,
     main_menu_buttons: Query<(Entity, &MainMenuButton, Has<FocusedMenuButton>)>,
 ) {
     let is_down = gamepads
@@ -183,8 +182,9 @@ fn spawn_layout(mut commands: Commands, assets: Res<AssetServer>) {
     commands
         .spawn((
             Camera2dBundle {
-                camera_2d: Camera2d {
+                camera: Camera {
                     clear_color: ClearColorConfig::Custom(Color::rgb_u8(178, 168, 213)),
+                    ..default()
                 },
                 ..default()
             },

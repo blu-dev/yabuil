@@ -1,9 +1,9 @@
 use bevy::{
     ecs::{
-        archetype::{Archetype, ArchetypeComponentId},
+        archetype::Archetype,
         change_detection::MutUntyped,
         component::{ComponentId, ComponentTicks, Tick},
-        query::{Access, FilteredAccess, ReadOnlyWorldQuery, WorldQuery},
+        query::{FilteredAccess, QueryData, QueryFilter, ReadOnlyQueryData, WorldQuery},
         storage::{Table, TableRow},
         world::unsafe_world_cell::UnsafeWorldCell,
     },
@@ -962,12 +962,15 @@ impl<'w> GroupNodeMut<'w> {
     }
 }
 
-unsafe impl<'a> ReadOnlyWorldQuery for NodeRef<'a> {}
+unsafe impl<'a> QueryData for NodeRef<'a> {
+    type ReadOnly = Self;
+}
+
+unsafe impl<'a> ReadOnlyQueryData for NodeRef<'a> {}
 
 unsafe impl<'a> WorldQuery for NodeRef<'a> {
     type Fetch<'w> = UnsafeWorldCell<'w>;
     type Item<'w> = NodeRef<'w>;
-    type ReadOnly = Self;
     type State = ComponentId;
 
     fn shrink<'wlong: 'wshort, 'wshort>(item: Self::Item<'wlong>) -> Self::Item<'wshort> {
@@ -975,7 +978,6 @@ unsafe impl<'a> WorldQuery for NodeRef<'a> {
     }
 
     const IS_DENSE: bool = true;
-    const IS_ARCHETYPAL: bool = true;
 
     unsafe fn init_fetch<'w>(
         world: UnsafeWorldCell<'w>,
@@ -1017,16 +1019,6 @@ unsafe impl<'a> WorldQuery for NodeRef<'a> {
         access.write_all()
     }
 
-    fn update_archetype_component_access(
-        _state: &Self::State,
-        archetype: &Archetype,
-        access: &mut Access<ArchetypeComponentId>,
-    ) {
-        for component_id in archetype.components() {
-            access.add_write(archetype.get_archetype_component_id(component_id).unwrap());
-        }
-    }
-
     fn init_state(world: &mut World) -> Self::State {
         world.init_component::<Node>()
     }
@@ -1037,12 +1029,15 @@ unsafe impl<'a> WorldQuery for NodeRef<'a> {
     ) -> bool {
         set_contains_id(*state)
     }
+
+    fn get_state(world: &World) -> Option<Self::State> {
+        world.component_id::<Node>()
+    }
 }
 
 unsafe impl<'a> WorldQuery for NodeMut<'a> {
     type Fetch<'w> = UnsafeWorldCell<'w>;
     type Item<'w> = NodeMut<'w>;
-    type ReadOnly = NodeRef<'a>;
     type State = ComponentId; // The node component ID
 
     fn shrink<'wlong: 'wshort, 'wshort>(item: Self::Item<'wlong>) -> Self::Item<'wshort> {
@@ -1050,7 +1045,6 @@ unsafe impl<'a> WorldQuery for NodeMut<'a> {
     }
 
     const IS_DENSE: bool = true;
-    const IS_ARCHETYPAL: bool = true;
 
     unsafe fn init_fetch<'w>(
         world: UnsafeWorldCell<'w>,
@@ -1092,16 +1086,6 @@ unsafe impl<'a> WorldQuery for NodeMut<'a> {
         access.write_all()
     }
 
-    fn update_archetype_component_access(
-        _state: &Self::State,
-        archetype: &Archetype,
-        access: &mut Access<ArchetypeComponentId>,
-    ) {
-        for component_id in archetype.components() {
-            access.add_write(archetype.get_archetype_component_id(component_id).unwrap());
-        }
-    }
-
     fn init_state(world: &mut World) -> Self::State {
         world.init_component::<Node>()
     }
@@ -1112,6 +1096,10 @@ unsafe impl<'a> WorldQuery for NodeMut<'a> {
     ) -> bool {
         set_contains_id(*state)
     }
+
+    fn get_state(world: &World) -> Option<Self::State> {
+        world.component_id::<Node>()
+    }
 }
 
 macro_rules! impl_node_kind_query {
@@ -1120,7 +1108,6 @@ macro_rules! impl_node_kind_query {
             unsafe impl<'a> WorldQuery for $mut_name<'a> {
                 type Fetch<'w> = UnsafeWorldCell<'w>;
                 type Item<'w> = $mut_name<'w>;
-                type ReadOnly = $ro_name<'a>;
                 type State = ComponentId; // The node component ID
 
                 fn shrink<'wlong: 'wshort, 'wshort>(item: Self::Item<'wlong>) -> Self::Item<'wshort> {
@@ -1128,7 +1115,6 @@ macro_rules! impl_node_kind_query {
                 }
 
                 const IS_DENSE: bool = true;
-                const IS_ARCHETYPAL: bool = true;
 
                 unsafe fn init_fetch<'w>(
                     world: UnsafeWorldCell<'w>,
@@ -1172,16 +1158,6 @@ macro_rules! impl_node_kind_query {
                     access.write_all()
                 }
 
-                fn update_archetype_component_access(
-                    _state: &Self::State,
-                    archetype: &Archetype,
-                    access: &mut Access<ArchetypeComponentId>,
-                ) {
-                    for component_id in archetype.components() {
-                        access.add_write(archetype.get_archetype_component_id(component_id).unwrap());
-                    }
-                }
-
                 fn init_state(world: &mut World) -> Self::State {
                     world.init_component::<Node>()
                 }
@@ -1193,6 +1169,18 @@ macro_rules! impl_node_kind_query {
                     set_contains_id(*state)
                 }
 
+                fn get_state(world: &World) -> Option<Self::State> {
+                    world.component_id::<Node>()
+                }
+            }
+
+            unsafe impl<'a> QueryData for $mut_name<'a> {
+                type ReadOnly = $ro_name<'a>;
+            }
+
+            impl<'a> QueryFilter for $mut_name<'a> {
+                const IS_ARCHETYPAL: bool = true;
+
                 unsafe fn filter_fetch(
                     fetch: &mut Self::Fetch<'_>,
                     entity: Entity,
@@ -1201,15 +1189,13 @@ macro_rules! impl_node_kind_query {
                     let node = NodeMut::try_new(*fetch, entity).unwrap();
                     *node.get::<NodeKind>().unwrap() == NodeKind::$kind
                 }
-
             }
 
-            unsafe impl<'a> ReadOnlyWorldQuery for $ro_name<'a> {}
+            unsafe impl<'a> ReadOnlyQueryData for $ro_name<'a> {}
 
             unsafe impl<'a> WorldQuery for $ro_name<'a> {
                 type Fetch<'w> = UnsafeWorldCell<'w>;
                 type Item<'w> = $ro_name<'w>;
-                type ReadOnly = Self;
                 type State = ComponentId; // The node component ID
 
                 fn shrink<'wlong: 'wshort, 'wshort>(item: Self::Item<'wlong>) -> Self::Item<'wshort> {
@@ -1217,7 +1203,6 @@ macro_rules! impl_node_kind_query {
                 }
 
                 const IS_DENSE: bool = true;
-                const IS_ARCHETYPAL: bool = true;
 
                 unsafe fn init_fetch<'w>(
                     world: UnsafeWorldCell<'w>,
@@ -1261,16 +1246,6 @@ macro_rules! impl_node_kind_query {
                     access.write_all()
                 }
 
-                fn update_archetype_component_access(
-                    _state: &Self::State,
-                    archetype: &Archetype,
-                    access: &mut Access<ArchetypeComponentId>,
-                ) {
-                    for component_id in archetype.components() {
-                        access.add_write(archetype.get_archetype_component_id(component_id).unwrap());
-                    }
-                }
-
                 fn init_state(world: &mut World) -> Self::State {
                     world.init_component::<Node>()
                 }
@@ -1281,6 +1256,18 @@ macro_rules! impl_node_kind_query {
                 ) -> bool {
                     set_contains_id(*state)
                 }
+
+                fn get_state(world: &World) -> Option<Self::State> {
+                    world.component_id::<Node>()
+                }
+            }
+
+            unsafe impl<'a> QueryData for $ro_name<'a> {
+                type ReadOnly = Self;
+            }
+
+            impl<'a> QueryFilter for $ro_name<'a> {
+                const IS_ARCHETYPAL: bool = true;
 
                 unsafe fn filter_fetch(
                     fetch: &mut Self::Fetch<'_>,

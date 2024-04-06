@@ -104,9 +104,9 @@ fn spawn_text_node(
     text: &TextNodeData,
 ) -> Entity {
     let text_anchor = match text.alignment {
-        TextAlignment::Left => Anchor::CenterLeft,
-        TextAlignment::Center => Anchor::Center,
-        TextAlignment::Right => Anchor::CenterRight,
+        JustifyText::Left => Anchor::CenterLeft,
+        JustifyText::Center => Anchor::Center,
+        JustifyText::Right => Anchor::CenterRight,
     };
 
     context

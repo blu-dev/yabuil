@@ -8,7 +8,7 @@ use bevy::{
     math::{UVec2, Vec2},
     reflect::TypePath,
     render::{color::Color, texture::Image},
-    text::{Font, TextAlignment},
+    text::{Font, JustifyText},
 };
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -215,7 +215,7 @@ pub struct TextNodeData {
     #[serde(skip)]
     pub handle: Handle<Font>,
     #[serde(default)]
-    pub alignment: TextAlignment,
+    pub alignment: JustifyText,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]

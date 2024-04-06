@@ -348,7 +348,7 @@ impl<'w, 's> UpdateInputDetectionState<'w, 's> {
 
 pub(crate) fn update_input_detection_nodes(
     mut commands: Commands,
-    input: Res<Input<MouseButton>>,
+    input: Res<ButtonInput<MouseButton>>,
     mut state: UpdateInputDetectionState,
     mut nodes: Query<(
         Entity,

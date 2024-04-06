@@ -1,4 +1,9 @@
-use bevy::{ecs::query::WorldQuery, math::vec2, prelude::*, utils::HashSet};
+use bevy::{
+    ecs::query::{QueryData, WorldQuery},
+    math::vec2,
+    prelude::*,
+    utils::HashSet,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -245,8 +250,8 @@ impl LayoutInfo {
     }
 }
 
-#[derive(WorldQuery)]
-#[world_query(mutable)]
+#[derive(QueryData)]
+#[query_data(mutable)]
 pub(crate) struct TransformPropagationQuery {
     entity: Entity,
     parent: &'static Parent,
@@ -297,8 +302,8 @@ pub(crate) fn propagate_to_transforms(
     });
 }
 
-#[derive(WorldQuery)]
-#[world_query(mutable)]
+#[derive(QueryData)]
+#[query_data(mutable)]
 pub(crate) struct BoundingBoxPropagationQuery {
     node: &'static Node,
     transform: &'static GlobalTransform,
@@ -373,8 +378,8 @@ pub(crate) fn propagate_to_bounding_box(
     });
 }
 
-#[derive(WorldQuery)]
-#[world_query(mutable)]
+#[derive(QueryData)]
+#[query_data(mutable)]
 pub(crate) struct RefreshQuery {
     z_index: &'static mut ZIndex,
     kind: &'static NodeKind,

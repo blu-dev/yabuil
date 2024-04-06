@@ -229,15 +229,15 @@ macro_rules! hm {
 impl UiInputMap {
     pub fn default_keyboard() -> HashMap<KeyCode, UiInput> {
         hm! {
-            KeyCode::Q => UiInput::RotateL1,
-            KeyCode::E => UiInput::RotateR1,
-            KeyCode::J => UiInput::RotateL2,
-            KeyCode::K => UiInput::RotateR2,
-            KeyCode::Z => UiInput::Decide,
-            KeyCode::X => UiInput::Cancel,
-            KeyCode::C => UiInput::Other1,
-            KeyCode::F => UiInput::Other2,
-            KeyCode::Return => UiInput::Start,
+            KeyCode::KeyQ => UiInput::RotateL1,
+            KeyCode::KeyE => UiInput::RotateR1,
+            KeyCode::KeyJ => UiInput::RotateL2,
+            KeyCode::KeyK => UiInput::RotateR2,
+            KeyCode::KeyZ => UiInput::Decide,
+            KeyCode::KeyX => UiInput::Cancel,
+            KeyCode::KeyC => UiInput::Other1,
+            KeyCode::KeyF => UiInput::Other2,
+            KeyCode::Enter => UiInput::Start,
             KeyCode::Escape => UiInput::Select
         }
     }
@@ -421,8 +421,8 @@ pub(crate) fn update_input_detection(world: &mut World) {
 
     world.resource_scope::<UiInputMap, _>(|world, mut mappings| {
         let gamepads = world.resource::<Gamepads>();
-        let gp_buttons = world.resource::<Input<GamepadButton>>();
-        let kb_buttons = world.resource::<Input<KeyCode>>();
+        let gp_buttons = world.resource::<ButtonInput<GamepadButton>>();
+        let kb_buttons = world.resource::<ButtonInput<KeyCode>>();
 
         for (code, input) in mappings.keyboard.iter() {
             if kb_buttons.just_pressed(*code) {
